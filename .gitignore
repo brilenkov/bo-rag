@@ -1,0 +1,6 @@
+﻿data/
+models/
+*.whl
+__pycache__/
+.embed_cache/
+*.tar.gz

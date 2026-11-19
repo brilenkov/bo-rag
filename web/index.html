@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Сохбеты БО — цифровой двойник</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b23;
+    --panel-2: #1d2430;
+    --text: #e8edf5;
+    --muted: #9aa7b8;
+    --accent: #d4a24a;
+    --accent-2: #8ab4f8;
+    --user: #23324a;
+    --line: #2a3444;
+    --err: #e07a7a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 20% -10%, #1b2534 0%, var(--bg) 55%);
+    color: var(--text);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+  }
+  header {
+    padding: 18px 20px 12px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(14,17,22,.75);
+    backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 10;
+  }
+  .head-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  h1 { font-size: 19px; margin: 0; letter-spacing: .2px; }
+  h1 .dot { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 13px; }
+  .note {
+    margin-top: 10px; font-size: 12.5px; color: var(--muted);
+    background: rgba(212,162,74,.08);
+    border: 1px solid rgba(212,162,74,.22);
+    border-radius: 10px; padding: 8px 11px;
+  }
+  .note b { color: var(--accent); font-weight: 600; }
+  main {
+    flex: 1; width: 100%; max-width: 900px; margin: 0 auto;
+    padding: 18px 16px 8px; display: flex; flex-direction: column; gap: 14px;
+  }
+  #chat { display: flex; flex-direction: column; gap: 14px; flex: 1; }
+  .empty { color: var(--muted); font-size: 14px; padding: 12px 4px; }
+  .sugg { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+  .sugg button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 999px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+  }
+  .sugg button:hover { border-color: var(--accent); color: var(--accent); }
+  .msg { display: flex; flex-direction: column; max-width: 100%; }
+  .msg.user { align-items: flex-end; }
+  .bubble {
+    padding: 11px 14px; border-radius: 14px; max-width: 86%;
+    white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere;
+  }
+  .user .bubble { background: var(--user); border: 1px solid #31476a; border-bottom-right-radius: 4px; }
+  .bot .bubble { background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+  .bot .bubble.typing { color: var(--muted); font-style: italic; }
+  .bubble strong { color: #fff; }
+  .bubble .cite-label { color: var(--muted); font-size: 12px; margin-top: 10px; display: block; }
+  .cites { margin-top: 8px; display: flex; flex-direction: column; gap: 5px; }
+  .cite {
+    font-size: 12.5px; color: var(--muted);
+    border-left: 2px solid var(--accent); padding: 2px 0 2px 9px;
+  }
+  .cite .date { color: var(--accent-2); }
+  .meta { font-size: 11px; color: var(--muted); margin-top: 4px; padding: 0 2px; }
+  footer { position: sticky; bottom: 0; background: linear-gradient(180deg, transparent, var(--bg) 30%); padding: 10px 0 18px; }
+  .composer {
+    max-width: 900px; margin: 0 auto; padding: 0 16px;
+  }
+  .box {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    padding: 10px; display: flex; flex-direction: column; gap: 8px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.35);
+  }
+  textarea {
+    width: 100%; resize: none; border: 0; outline: 0; background: transparent;
+    color: var(--text); font: inherit; min-height: 28px; max-height: 160px; padding: 2px 4px;
+  }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  .btn {
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+    border-radius: 10px; padding: 8px 12px; cursor: pointer; font-size: 13.5px;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { border-color: #43546b; }
+  .btn.primary { background: var(--accent); color: #1a1408; border-color: var(--accent); font-weight: 600; }
+  .btn.primary:disabled { opacity: .5; cursor: default; }
+  .btn.mic.rec { background: #5a2222; border-color: #a34; color: #ffd9d9; }
+  .select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 7px 9px; font-size: 13px;
+  }
+  label.toggle { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  .status { max-width: 900px; margin: 6px auto 0; padding: 0 18px; font-size: 11.5px; color: var(--muted); display: flex; justify-content: space-between; gap: 10px; }
+  .status .err { color: var(--err); }
+  a { color: var(--accent-2); }
+  @media (max-width: 600px) {
+    .bubble { max-width: 94%; }
+    h1 { font-size: 17px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="head-row">
+    <h1>Сохбеты <span class="dot">БО</span></h1>
+    <span class="sub">цифровой двойник по записям сохбетов</span>
+  </div>
+  <div class="note">
+    <b>Важно:</b> ответы собраны из записей сохбетов и могут быть неполными.
+    Это не терапия и не медицинская рекомендация. Проверяйте источник по дате и таймкоду.
+  </div>
+</header>
+
+<main>
+  <div id="chat">
+    <div class="empty" id="empty">
+      Ассаляму алейкум. Спросите о чём говорилось на сохбетах — я найду фрагменты и отвечу по ним.
+      <div class="sugg" id="sugg">
+        <button data-q="Что такое нафс?">Что такое нафс?</button>
+        <button data-q="Что такое закон трёх?">Что такое закон трёх?</button>
+        <button data-q="Что значит «стирание»?">Что значит «стирание»?</button>
+        <button data-q="Как устроены центры человека?">Как устроены центры?</button>
+        <button data-q="Что говорилось про покаяние?">Про покаяние</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="composer">
+    <div class="box">
+      <textarea id="q" rows="1" placeholder="Напишите вопрос…" autocomplete="off"></textarea>
+      <div class="row">
+        <select class="select" id="mode" title="Режим ответа">
+          <option value="publication">📝 Для публикации</option>
+          <option value="zhivoy">🎙 Живой</option>
+        </select>
+        <button class="btn mic" id="mic" title="Голосовой ввод">🎤 Голос</button>
+        <label class="toggle"><input type="checkbox" id="tts"> озвучивать</label>
+        <span class="grow"></span>
+        <button class="btn primary" id="send">Отправить</button>
+      </div>
+    </div>
+  </div>
+  <div class="status">
+    <span id="status">Готов</span>
+    <span id="left"></span>
+  </div>
+</footer>
+
+<script>
+(function () {
+  const chat = document.getElementById('chat');
+  const empty = document.getElementById('empty');
+  const input = document.getElementById('q');
+  const sendBtn = document.getElementById('send');
+  const micBtn = document.getElementById('mic');
+  const modeSel = document.getElementById('mode');
+  const ttsBox = document.getElementById('tts');
+  const statusEl = document.getElementById('status');
+  const leftEl = document.getElementById('left');
+  let busy = false;
+  let accessCode = localStorage.getItem('bo_access') || '';
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+  function fmt(s) {
+    let h = esc(s);
+    h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    return h;
+  }
+  function addMsg(role, html, meta) {
+    if (empty && empty.parentNode) empty.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + role;
+    const b = document.createElement('div');
+    b.className = 'bubble';
+    b.innerHTML = html;
+    wrap.appendChild(b);
+    if (meta) {
+      const m = document.createElement('div');
+      m.className = 'meta';
+      m.textContent = meta;
+      wrap.appendChild(m);
+    }
+    chat.appendChild(wrap);
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    return b;
+  }
+  async function speak(text) {
+    if (!ttsBox.checked) return;
+    const clean = text.replace(/\*\*/g, '').slice(0, 1200);
+    // 1) Yandex SpeechKit на сервере (если настроен)
+    try {
+      const r = await fetch('/tts', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: clean })
+      });
+      if (r.ok) {
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => URL.revokeObjectURL(url);
+        await audio.play();
+        return;
+      }
+    } catch (e) {}
+    // 2) Fallback — голос браузера
+    if (!('speechSynthesis' in window)) return;
+    try {
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(clean);
+      u.lang = 'ru-RU'; u.rate = 0.98;
+      const v = speechSynthesis.getVoices().find(x => x.lang && x.lang.toLowerCase().startsWith('ru'));
+      if (v) u.voice = v;
+      speechSynthesis.speak(u);
+    } catch (e) {}
+  }
+  function citationsHtml(cites) {
+    if (!cites || !cites.length) return '';
+    let h = '<span class="cite-label">Источники</span><div class="cites">';
+    for (const c of cites) {
+      h += '<div class="cite"><span class="date">сохбет ' + esc(c.sohbet_date) + '</span>'
+        + (c.time ? ', ' + esc(c.time) : '')
+        + (c.excerpt ? ' — ' + esc(c.excerpt) : '') + '</div>';
+    }
+    return h + '</div>';
+  }
+  async function ask(question) {
+    if (busy) return;
+    const q = (question || input.value).trim();
+    if (q.length < 3) { input.focus(); return; }
+    busy = true;
+    sendBtn.disabled = true;
+    input.value = '';
+    autoGrow();
+    addMsg('user', fmt(q));
+    const b = addMsg('bot', '<span class="typing">Ищу по сохбетам…</span>');
+    statusEl.textContent = 'Поиск и формулировка ответа…';
+    statusEl.classList.remove('err');
+    try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (accessCode) headers['X-Access-Code'] = accessCode;
+      const r = await fetch('/ask', {
+        method: 'POST', headers,
+        body: JSON.stringify({ question: q, mode: modeSel.value })
+      });
+      if (r.status === 401) {
+        const code = prompt('Введите код доступа:');
+        if (code) { accessCode = code; localStorage.setItem('bo_access', code); busy = false; sendBtn.disabled = false; return ask(q); }
+        throw new Error('Нужен код доступа.');
+      }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.message || ('Ошибка ' + r.status));
+      b.classList.remove('typing');
+      b.innerHTML = fmt(data.answer || 'Пустой ответ.') + citationsHtml(data.citations);
+      b.parentNode.insertAdjacentHTML('beforeend',
+        '<div class="meta">' + (data.elapsed_sec != null ? data.elapsed_sec + ' c · ' : '')
+        + 'режим: ' + (data.mode === 'zhivoy' ? 'живой' : 'для публикации') + '</div>');
+      if (data.left != null) leftEl.textContent = 'осталось вопросов сегодня: ' + data.left;
+      speak((data.answer || '').replace(/\*\*/g, ''));
+      statusEl.textContent = 'Готов';
+    } catch (e) {
+      b.classList.remove('typing');
+      b.innerHTML = '<span style="color:var(--err)">' + esc(e.message || String(e)) + '</span>';
+      statusEl.textContent = 'Ошибка';
+      statusEl.classList.add('err');
+    } finally {
+      busy = false;
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  // автовысота textarea
+  function autoGrow() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  }
+  input.addEventListener('input', autoGrow);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+  });
+  sendBtn.addEventListener('click', () => ask());
+  document.getElementById('sugg').addEventListener('click', e => {
+    const b = e.target.closest('button[data-q]');
+    if (b) ask(b.getAttribute('data-q'));
+  });
+
+  // Голосовой ввод: Web Speech API (Chrome/Edge/Safari)
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, listening = false;
+  if (!SR) {
+    micBtn.disabled = true;
+    micBtn.title = 'Голосовой ввод не поддерживается этим браузером';
+  } else {
+    rec = new SR();
+    rec.lang = 'ru-RU';
+    rec.interimResults = true;
+    rec.continuous = false;
+    rec.onresult = ev => {
+      let final = '', interim = '';
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const t = ev.results[i][0].transcript;
+        if (ev.results[i].isFinal) final += t; else interim += t;
+      }
+      if (final) input.value = (input.value + ' ' + final).trim();
+      else if (interim) input.value = interim;
+      autoGrow();
+    };
+    rec.onend = () => {
+      listening = false;
+      micBtn.classList.remove('rec');
+      micBtn.textContent = '🎤 Голос';
+      statusEl.textContent = 'Готов';
+    };
+    rec.onerror = e => {
+      statusEl.textContent = 'Голос: ' + (e.error || 'ошибка');
+      statusEl.classList.add('err');
+    };
+    micBtn.addEventListener('click', () => {
+      if (listening) { rec.stop(); return; }
+      try {
+        speechSynthesis.cancel();
+        listening = true;
+        micBtn.classList.add('rec');
+        micBtn.textContent = '■ Слушаю';
+        statusEl.textContent = 'Говорите…';
+        statusEl.classList.remove('err');
+        rec.start();
+      } catch (e) {
+        statusEl.textContent = 'Не удалось включить микрофон';
+        statusEl.classList.add('err');
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>
