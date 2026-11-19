@@ -41,7 +41,41 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 
 MODE_NAMES = {"zhivoy": "🎙 Живой", "publication": "📝 Для публикации"}
 user_mode: dict[int, str] = {}
+user_voice: dict[int, str] = {}
+user_speed: dict[int, float] = {}
+user_tts: dict[int, bool] = {}
 cancel_events: dict[int, threading.Event] = {}
+SETTINGS_PATH = BOT_DIR / "data" / "user_settings.json"
+
+
+def load_settings() -> None:
+    try:
+        d = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    for k, v in (d.get("mode") or {}).items():
+        user_mode[int(k)] = v
+    for k, v in (d.get("voice") or {}).items():
+        user_voice[int(k)] = v
+    for k, v in (d.get("speed") or {}).items():
+        user_speed[int(k)] = float(v)
+    for k, v in (d.get("tts") or {}).items():
+        user_tts[int(k)] = bool(v)
+    log.info("settings loaded: voice=%d speed=%d tts=%d",
+             len(user_voice), len(user_speed), len(user_tts))
+
+
+def save_settings() -> None:
+    try:
+        SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_PATH.write_text(json.dumps({
+            "mode": {str(k): v for k, v in user_mode.items()},
+            "voice": {str(k): v for k, v in user_voice.items()},
+            "speed": {str(k): v for k, v in user_speed.items()},
+            "tts": {str(k): v for k, v in user_tts.items()},
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as e:
+        log.warning("save settings failed: %s", e)
 
 SELF_PING_INTERVAL = 600  # 10 мин < 15 мин лимита Render
 DEBUG = os.environ.get("BO_DEBUG") == "1"
@@ -91,12 +125,14 @@ YC_KEY_ID = os.environ.get("YC_KEY_ID", "").strip()
 YC_PRIVATE_KEY = os.environ.get("YC_PRIVATE_KEY", "").replace("\\n", "\n").strip()
 YC_VOICE = os.environ.get("YC_VOICE", "filipp")
 EDGE_VOICE = os.environ.get("BO_EDGE_VOICE", "ru-RU-DmitryNeural")
+TTS_PROVIDER = os.environ.get("BO_TTS_PROVIDER", "auto").strip().lower()
 TTS_CACHE = BOT_DIR / "data" / "tts_cache"
 _web_hits: dict[str, list] = {}
 _web_lock = threading.Lock()
 _yc_token = None
 _yc_token_exp = 0.0
 _yc_lock = threading.Lock()
+_yc_fail_until = 0.0
 
 YANDEX_VOICES = [
     {"id": "filipp", "label": "Филипп — спокойный мужской"},
@@ -117,6 +153,8 @@ _EDGE_IDS = {v["id"] for v in EDGE_VOICES}
 
 
 def yandex_ready() -> bool:
+    if TTS_PROVIDER == "edge" or time.time() < _yc_fail_until:
+        return False
     return bool(YC_FOLDER_ID and (
         YC_API_KEY or (YC_SA_ID and YC_KEY_ID and YC_PRIVATE_KEY)))
 
@@ -171,7 +209,9 @@ def resolve_voice(v: str = "") -> str:
     return "ru-RU-DmitryNeural" if male else "ru-RU-SvetlanaNeural"
 
 
-def yandex_tts(text: str, voice: str = None, speed: float = 0.95) -> bytes:
+def yandex_tts(text: str, voice: str = None, speed: float = 0.95,
+               fmt: str = "mp3") -> bytes:
+    global _yc_fail_until
     if YC_API_KEY:
         auth = f"Api-Key {YC_API_KEY}"
     elif YC_SA_ID and YC_KEY_ID and YC_PRIVATE_KEY:
@@ -179,21 +219,31 @@ def yandex_tts(text: str, voice: str = None, speed: float = 0.95) -> bytes:
     else:
         raise RuntimeError("Yandex SpeechKit не настроен")
     speed = max(0.5, min(1.5, float(speed or 0.95)))
-    data = urllib.parse.urlencode({
+    params = {
         "text": text[:1000],
         "lang": "ru-RU",
         "voice": voice or YC_VOICE,
         "speed": f"{speed:.2f}",
-        "format": "mp3",
+        "format": fmt,
         "folderId": YC_FOLDER_ID,
-    }).encode()
+    }
+    if fmt == "oggopus":
+        params["sampleRateHertz"] = "48000"
+    data = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(
         "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
         data=data,
         headers={"Authorization": auth,
                  "Content-Type": "application/x-www-form-urlencoded"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read()
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            _yc_fail_until = time.time() + 3600
+            log.warning("Yandex TTS auth failed (%s) — Edge fallback 1h",
+                        e.code)
+        raise
 
 
 def edge_tts_mp3(text: str, voice: str = None, speed: float = 0.95) -> bytes:
@@ -218,6 +268,147 @@ def edge_tts_mp3(text: str, voice: str = None, speed: float = 0.95) -> bytes:
 
     asyncio.run(run())
     return path.read_bytes()
+
+
+def get_voice(uid: int) -> str:
+    return user_voice.get(uid) or resolve_voice("")
+
+
+def get_speed(uid: int) -> float:
+    return float(user_speed.get(uid, 0.95))
+
+
+def get_tts(uid: int) -> bool:
+    return bool(user_tts.get(uid, False))
+
+
+def voice_label(vid: str) -> str:
+    for v in YANDEX_VOICES + EDGE_VOICES:
+        if v["id"] == vid:
+            return v["label"].split(" — ")[0]
+    return vid
+
+
+def settings_keyboard(uid: int) -> dict:
+    mode = get_mode(uid)
+    voice = get_voice(uid)
+    speed = get_speed(uid)
+    tts = get_tts(uid)
+
+    def mark(ok):
+        return "✅ " if ok else ""
+
+    return {"inline_keyboard": [
+        [{"text": mark(mode == "zhivoy") + "🎙 Живой",
+          "callback_data": "set:mode:zhivoy"},
+         {"text": mark(mode == "publication") + "📝 Публикация",
+          "callback_data": "set:mode:publication"}],
+        [{"text": f"🎤 Голос: {voice_label(voice)}",
+          "callback_data": "menu:voice"}],
+        [{"text": f"⚡ Скорость: {speed:.2f}×",
+          "callback_data": "menu:speed"}],
+        [{"text": ("🔊 Озвучка ответов: вкл" if tts
+                   else "🔇 Озвучка ответов: выкл"),
+          "callback_data": "set:tts:" + ("off" if tts else "on")}],
+        [{"text": "▶️ Проверить голос", "callback_data": "test:voice"}],
+    ]}
+
+
+def voice_menu_keyboard(uid: int) -> dict:
+    voices = YANDEX_VOICES if yandex_ready() else EDGE_VOICES
+    cur = get_voice(uid)
+    rows = []
+    for i in range(0, len(voices), 2):
+        row = []
+        for v in voices[i:i + 2]:
+            row.append({"text": ("✅ " if v["id"] == cur else "")
+                        + v["label"].split(" — ")[0],
+                        "callback_data": f"set:voice:{v['id']}"})
+        rows.append(row)
+    rows.append([{"text": "← Назад", "callback_data": "menu:settings"}])
+    return {"inline_keyboard": rows}
+
+
+def speed_menu_keyboard(uid: int) -> dict:
+    cur = get_speed(uid)
+    speeds = [0.8, 0.9, 0.95, 1.0, 1.1, 1.2]
+    rows = []
+    for i in range(0, len(speeds), 3):
+        rows.append([{"text": ("✅ " if abs(cur - s) < 0.001 else "")
+                      + f"{s:.2f}×", "callback_data": f"set:speed:{s}"}
+                     for s in speeds[i:i + 3]])
+    rows.append([{"text": "← Назад", "callback_data": "menu:settings"}])
+    return {"inline_keyboard": rows}
+
+
+def handle_settings(chat_id: int, uid: int, message_id: int = None,
+                    text: str = "⚙️ Настройки ответа") -> None:
+    if message_id:
+        edit_message(chat_id, message_id, text, settings_keyboard(uid))
+    else:
+        send_message(chat_id, text, settings_keyboard(uid))
+
+
+def tg_upload(method: str, chat_id: int, field: str, filename: str,
+              data: bytes, mime: str, caption: str = None) -> dict:
+    """multipart-загрузка файла в Bot API (sendVoice/sendAudio)."""
+    boundary = "----BORAG" + str(int(time.time() * 1000))
+
+    def part(name, value):
+        return (f"--{boundary}\r\nContent-Disposition: form-data; "
+                f"name=\"{name}\"\r\n\r\n{value}\r\n").encode()
+
+    body = part("chat_id", str(chat_id))
+    if caption:
+        body += part("caption", caption)
+    body += (f"--{boundary}\r\nContent-Disposition: form-data; "
+             f"name=\"{field}\"; filename=\"{filename}\"\r\n"
+             f"Content-Type: {mime}\r\n\r\n").encode()
+    body += data + f"\r\n--{boundary}--\r\n".encode()
+    for attempt in range(3):
+        req = urllib.request.Request(
+            f"{API}/{method}", data=body,
+            headers={"Content-Type":
+                     f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                res = json.loads(r.read())
+            if not res.get("ok"):
+                raise RuntimeError(f"TG {method}: {str(res)[:200]}")
+            return res["result"]
+        except urllib.error.HTTPError as e:
+            if e.code >= 500 and attempt < 2:
+                time.sleep(1 + attempt * 2)
+                continue
+            raise
+    raise RuntimeError("upload failed")
+
+
+def tts_telegram(text: str, voice: str, speed: float):
+    if yandex_ready():
+        try:
+            return (yandex_tts(text, voice, speed, fmt="oggopus"),
+                    "voice.ogg", "audio/ogg", True)
+        except Exception as e:
+            log.warning("yandex voice failed: %s — edge fallback", e)
+    return (edge_tts_mp3(text, resolve_voice("male"), speed),
+            "voice.mp3", "audio/mpeg", False)
+
+
+def send_voice_answer(chat_id: int, text: str, voice: str, speed: float,
+                      caption: str = "🔊 Озвучка ответа") -> None:
+    try:
+        data, fname, mime, is_voice = tts_telegram(text, voice, speed)
+        if is_voice:
+            tg_upload("sendVoice", chat_id, "voice", fname, data, mime, caption)
+        else:
+            tg_upload("sendAudio", chat_id, "audio", fname, data, mime, caption)
+    except Exception as e:
+        log.warning("send voice failed: %s", e)
+        try:
+            send_message(chat_id, f"Не удалось озвучить: {str(e)[:150]}")
+        except Exception:
+            pass
 
 
 def web_rate_ok(ip: str) -> tuple[bool, int]:
@@ -497,7 +688,9 @@ def mode_keyboard(current: str) -> dict:
         mark = "✅ " if mode == current else ""
         return {"text": mark + MODE_NAMES[mode],
                 "callback_data": f"mode:{mode}"}
-    return {"inline_keyboard": [[btn("zhivoy")], [btn("publication")]]}
+    return {"inline_keyboard": [[btn("zhivoy")], [btn("publication")],
+                                [{"text": "⚙️ Настройки",
+                                  "callback_data": "menu:settings"}]]}
 
 
 def get_mode(user_id: int) -> str:
@@ -573,10 +766,14 @@ def handle_question(msg: dict) -> None:
         return
     delete_message(chat_id, status_id)
     send_long(chat_id, format_answer(res))
-    try:
-        send_top_source_audio(chat_id, res)
-    except Exception as e:
-        log.warning("top source audio failed: %s", e)
+    if get_tts(user_id):
+        send_voice_answer(chat_id, res["answer"], get_voice(user_id),
+                          get_speed(user_id))
+    else:
+        try:
+            send_top_source_audio(chat_id, res)
+        except Exception as e:
+            log.warning("top source audio failed: %s", e)
     log.info("A in %ss best=%s", res["elapsed_sec"], res["best_score"])
 
 
@@ -591,34 +788,101 @@ def handle_update(upd: dict) -> None:
                 pass
             return
         data = cq.get("data", "")
-        if data.startswith("cancel:"):
+        uid = cq["from"]["id"]
+        msg = cq.get("message") or {}
+        chat_id = (msg.get("chat") or {}).get("id")
+        mid = msg.get("message_id")
+
+        def ack(text=None):
             try:
-                uid = int(data.split(":", 1)[1])
-            except Exception:
-                uid = None
-            ev = cancel_events.get(uid)
-            if ev:
-                ev.set()
-            msg = cq.get("message") or {}
-            if msg.get("message_id"):
-                edit_message(msg["chat"]["id"], msg["message_id"],
-                             "⏹ Останавливаю…", {"inline_keyboard": []})
-            try:
-                tg("answerCallbackQuery", callback_query_id=cq["id"],
-                   text="Останавливаю…")
+                params = {"callback_query_id": cq["id"]}
+                if text:
+                    params["text"] = text
+                tg("answerCallbackQuery", **params)
             except Exception:
                 pass
+
+        if data.startswith("cancel:"):
+            try:
+                cuid = int(data.split(":", 1)[1])
+            except Exception:
+                cuid = None
+            ev = cancel_events.get(cuid)
+            if ev:
+                ev.set()
+            if mid and chat_id:
+                edit_message(chat_id, mid, "⏹ Останавливаю…",
+                             {"inline_keyboard": []})
+            ack("Останавливаю…")
+            return
+        if data == "menu:settings":
+            if chat_id:
+                handle_settings(chat_id, uid, mid)
+            ack()
+            return
+        if data == "menu:voice":
+            if chat_id:
+                edit_message(chat_id, mid, "🎤 Выберите голос:",
+                             voice_menu_keyboard(uid))
+            ack()
+            return
+        if data == "menu:speed":
+            if chat_id:
+                edit_message(chat_id, mid, "⚡ Выберите скорость:",
+                             speed_menu_keyboard(uid))
+            ack()
+            return
+        if data.startswith("set:mode:"):
+            mode = data.split(":", 2)[2]
+            if mode in MODE_NAMES:
+                user_mode[uid] = mode
+                save_settings()
+            if chat_id:
+                handle_settings(chat_id, uid, mid)
+            ack()
+            return
+        if data.startswith("set:voice:"):
+            user_voice[uid] = data.split(":", 2)[2]
+            save_settings()
+            if chat_id:
+                edit_message(chat_id, mid, "🎤 Выберите голос:",
+                             voice_menu_keyboard(uid))
+            ack()
+            return
+        if data.startswith("set:speed:"):
+            try:
+                sp = float(data.split(":", 2)[2])
+            except Exception:
+                sp = 0.95
+            user_speed[uid] = max(0.5, min(1.5, sp))
+            save_settings()
+            if chat_id:
+                edit_message(chat_id, mid, "⚡ Выберите скорость:",
+                             speed_menu_keyboard(uid))
+            ack()
+            return
+        if data.startswith("set:tts:"):
+            user_tts[uid] = data.endswith(":on")
+            save_settings()
+            if chat_id:
+                handle_settings(chat_id, uid, mid)
+            ack()
+            return
+        if data == "test:voice":
+            ack("Готовлю голос…")
+            send_voice_answer(chat_id or uid,
+                              "Ассаляму алейкум. Это проверка выбранного "
+                              "голоса и скорости.", get_voice(uid),
+                              get_speed(uid))
             return
         if data.startswith("mode:"):
             mode = data.split(":", 1)[1]
-            user_mode[cq["from"]["id"]] = mode
-            msg = cq["message"]
-            edit_message(msg["chat"]["id"], msg["message_id"],
-                         f"Режим: {MODE_NAMES[mode]}", mode_keyboard(mode))
-        try:
-            tg("answerCallbackQuery", callback_query_id=cq["id"])
-        except Exception:
-            pass
+            user_mode[uid] = mode
+            save_settings()
+            if chat_id:
+                edit_message(chat_id, mid, f"Режим: {MODE_NAMES[mode]}",
+                             mode_keyboard(mode))
+        ack()
         return
 
     msg = upd.get("message") or {}
@@ -640,12 +904,21 @@ def handle_update(upd: dict) -> None:
         send_message(chat_id,
                      "Ассаляму алейкум. Я — цифровой двойник Бориса Олеговича, "
                      "отвечаю по записям его сохбетов.\n\n"
-                     "Просто напиши вопрос. Режим ответа можно переключить:",
+                     "Просто напиши вопрос. Настройки голоса и скорости — "
+                     "кнопка «⚙️ Настройки» или /settings.",
                      mode_keyboard(get_mode(user_id)))
     elif text.startswith("/mode"):
         send_message(chat_id,
                      f"Текущий режим: {MODE_NAMES[get_mode(user_id)]}",
                      mode_keyboard(get_mode(user_id)))
+    elif text.startswith("/settings"):
+        handle_settings(chat_id, user_id)
+    elif text.startswith("/voice"):
+        send_message(chat_id, "🎤 Выберите голос:",
+                     voice_menu_keyboard(user_id))
+    elif text.startswith("/speed"):
+        send_message(chat_id, "⚡ Выберите скорость:",
+                     speed_menu_keyboard(user_id))
     elif text.startswith("/stats"):
         from rag_core import get_store
         c = get_store().counts()
@@ -929,6 +1202,7 @@ def self_ping_loop() -> None:
 
 
 def main() -> None:
+    load_settings()
     start_http_server()  # порт сразу — иначе Render убьёт по таймауту
     threading.Thread(target=self_ping_loop, daemon=True).start()
     if os.environ.get("BO_WEB_ONLY") == "1":
