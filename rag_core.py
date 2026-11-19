@@ -461,11 +461,12 @@ def _collect_citations(ctx: dict, used: set | None) -> list:
 
 
 def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
-           progress=None) -> dict:
+           progress=None, cancel=None) -> dict:
     """Полный цикл: поиск → генерация → ответ с цитатами.
 
     progress(stage: str) — колбэк стадий для живого статуса в боте:
     "load" (первая загрузка модели), "hyde", "search", "llm".
+    cancel — threading.Event; если взведён, ответ не отправляется.
     """
     def stage(name):
         log.info("stage=%s anon=%dMB", name, mem_mb())
@@ -475,7 +476,17 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
             except Exception:
                 pass
 
+    def cancelled() -> bool:
+        return cancel is not None and cancel.is_set()
+
+    def cancelled_result(best=0.0, hyde=None) -> dict:
+        return {"answer": "", "citations": [], "mode": mode,
+                "best_score": best, "elapsed_sec": round(time.time() - t0, 1),
+                "model": None, "hyde": hyde, "cancelled": True}
+
     t0 = time.time()
+    if cancelled():
+        return cancelled_result()
     stage("load" if _embedder is None or _store is None else "start")
     if use_hyde:
         stage("hyde")
@@ -485,6 +496,9 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
         [h["score"] for h in ctx["paragraphs"] + ctx["qa"]], default=0)
     best_rank = ctx.get("best_rank") or 0.0
     log.info("best_cos=%.4f best_rank=%.4f", best, best_rank)
+
+    if cancelled():
+        return cancelled_result(best, ctx.get("hyde"))
 
     if best < MIN_SCORE and best_rank < RANK_MIN_SCORE:
         if mode == "zhivoy":
@@ -512,7 +526,11 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                   + CITE_INSTRUCTION)
 
     stage("llm")
+    if cancelled():
+        return cancelled_result(best, ctx.get("hyde"))
     text = call_llm(prompt, system=system, max_tokens=2500)
+    if cancelled():
+        return cancelled_result(best, ctx.get("hyde"))
     text, used = _parse_used_sources(text)
 
     citations = _collect_citations(ctx, used)

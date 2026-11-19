@@ -41,6 +41,7 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 
 MODE_NAMES = {"zhivoy": "🎙 Живой", "publication": "📝 Для публикации"}
 user_mode: dict[int, str] = {}
+cancel_events: dict[int, threading.Event] = {}
 
 SELF_PING_INTERVAL = 600  # 10 мин < 15 мин лимита Render
 DEBUG = os.environ.get("BO_DEBUG") == "1"
@@ -536,7 +537,10 @@ def handle_question(msg: dict) -> None:
     t0 = time.time()
     log.info("Q from %s mode=%s: %s", user_id, mode, question[:80])
 
-    status_id = send_message(chat_id, "⏳ …")
+    status_id = send_message(
+        chat_id, "⏳ …",
+        markup={"inline_keyboard": [[{
+            "text": "⏹ Стоп", "callback_data": f"cancel:{user_id}"}]]})
     last_edit = [0.0]
 
     def progress(stage: str) -> None:
@@ -550,14 +554,22 @@ def handle_question(msg: dict) -> None:
                     f"anon={mem_mb()}MB</i>")
         edit_message(chat_id, status_id, txt)
 
+    cancel_ev = threading.Event()
+    cancel_events[user_id] = cancel_ev
     try:
         from rag_core import answer
-        res = answer(question, mode, progress=progress)
+        res = answer(question, mode, progress=progress, cancel=cancel_ev)
     except Exception as e:
+        cancel_events.pop(user_id, None)
         log.exception("rag error")
         delete_message(chat_id, status_id)
         send_message(chat_id, "Произошла ошибка при поиске ответа. "
                               f"Попробуй ещё раз чуть позже.\n({e})")
+        return
+    cancel_events.pop(user_id, None)
+    if res.get("cancelled"):
+        edit_message(chat_id, status_id, "⏹ Остановлено.",
+                     {"inline_keyboard": []})
         return
     delete_message(chat_id, status_id)
     send_long(chat_id, format_answer(res))
@@ -579,6 +591,24 @@ def handle_update(upd: dict) -> None:
                 pass
             return
         data = cq.get("data", "")
+        if data.startswith("cancel:"):
+            try:
+                uid = int(data.split(":", 1)[1])
+            except Exception:
+                uid = None
+            ev = cancel_events.get(uid)
+            if ev:
+                ev.set()
+            msg = cq.get("message") or {}
+            if msg.get("message_id"):
+                edit_message(msg["chat"]["id"], msg["message_id"],
+                             "⏹ Останавливаю…", {"inline_keyboard": []})
+            try:
+                tg("answerCallbackQuery", callback_query_id=cq["id"],
+                   text="Останавливаю…")
+            except Exception:
+                pass
+            return
         if data.startswith("mode:"):
             mode = data.split(":", 1)[1]
             user_mode[cq["from"]["id"]] = mode
@@ -632,7 +662,17 @@ def handle_update(upd: dict) -> None:
 
 
 def _run_update(upd: dict) -> None:
-    """Обработка обновления в отдельном потоке (webhook уже ответил 200)."""
+    """Обработка обновления в отдельном потоке (webhook уже ответил 200).
+
+    Callback-кнопки (в т.ч. «Стоп») обрабатываются вне _tg_lock, чтобы
+    не ждать завершения текущего ответа.
+    """
+    if "callback_query" in upd:
+        try:
+            handle_update(upd)
+        except Exception:
+            log.exception("callback handler error")
+        return
     with _tg_lock:
         try:
             handle_update(upd)

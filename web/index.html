@@ -102,6 +102,8 @@
   .btn.primary { background: var(--accent); color: #1a1408; border-color: var(--accent); font-weight: 600; }
   .btn.primary:disabled { opacity: .5; cursor: default; }
   .btn.mic.rec { background: #5a2222; border-color: #a34; color: #ffd9d9; }
+  .btn.stop { border-color: #a34; color: #ffd9d9; }
+  .btn.stop:hover { border-color: #d66; }
   .select {
     background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 10px; padding: 7px 9px; font-size: 13px;
@@ -159,6 +161,7 @@
         <button class="btn mic" id="mic" title="Голосовой ввод">🎤 Голос</button>
         <label class="toggle"><input type="checkbox" id="tts"> озвучивать</label>
         <span class="grow"></span>
+        <button class="btn stop" id="stop" style="display:none">⏹ Стоп</button>
         <button class="btn primary" id="send">Отправить</button>
       </div>
       <div class="row voice-row">
@@ -186,6 +189,7 @@
   const empty = document.getElementById('empty');
   const input = document.getElementById('q');
   const sendBtn = document.getElementById('send');
+  const stopBtn = document.getElementById('stop');
   const micBtn = document.getElementById('mic');
   const modeSel = document.getElementById('mode');
   const ttsBox = document.getElementById('tts');
@@ -196,7 +200,17 @@
   const statusEl = document.getElementById('status');
   const leftEl = document.getElementById('left');
   let busy = false;
+  let speaking = false;
+  let requestSeq = 0;
+  let currentController = null;
+  let currentTtsController = null;
+  let currentAudio = null;
+  let currentBubble = null;
   let accessCode = localStorage.getItem('bo_access') || '';
+
+  function refreshStop() {
+    stopBtn.style.display = (busy || speaking) ? '' : 'none';
+  }
 
   speed.addEventListener('input', () => {
     speedVal.textContent = Number(speed.value).toFixed(2) + '×';
@@ -244,10 +258,14 @@
   async function speak(text, force = false) {
     if (!force && !ttsBox.checked) return;
     const clean = text.replace(/\*\*/g, '').slice(0, 1200);
+    speaking = true;
+    refreshStop();
+    currentTtsController = new AbortController();
     // 1) Серверная озвучка: Yandex SpeechKit или Edge TTS
     try {
       const r = await fetch('/tts', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
+        signal: currentTtsController.signal,
         body: JSON.stringify({ text: clean, voice: voiceSel.value,
                                speed: Number(speed.value) })
       });
@@ -255,13 +273,31 @@
         const blob = await r.blob();
         const url = URL.createObjectURL(blob);
         const audio = new Audio(url);
-        audio.onended = () => URL.revokeObjectURL(url);
+        currentAudio = audio;
+        audio.onended = () => {
+          URL.revokeObjectURL(url);
+          if (currentAudio === audio) currentAudio = null;
+          speaking = false;
+          refreshStop();
+        };
         await audio.play();
         return;
       }
-    } catch (e) {}
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        speaking = false;
+        refreshStop();
+        return;
+      }
+    } finally {
+      currentTtsController = null;
+    }
     // 2) Fallback — голос браузера
-    if (!('speechSynthesis' in window)) return;
+    if (!('speechSynthesis' in window)) {
+      speaking = false;
+      refreshStop();
+      return;
+    }
     try {
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(clean);
@@ -272,8 +308,13 @@
         ? /dmitr|pavel|yuri|male|муж/i.test(x.name)
         : /svetlana|irina|alena|female|жен/i.test(x.name)) || voices[0];
       if (v) u.voice = v;
+      u.onend = () => { speaking = false; refreshStop(); };
+      u.onerror = () => { speaking = false; refreshStop(); };
       speechSynthesis.speak(u);
-    } catch (e) {}
+    } catch (e) {
+      speaking = false;
+      refreshStop();
+    }
   }
   function citationsHtml(cites) {
     if (!cites || !cites.length) return '';
@@ -290,6 +331,7 @@
   }
   async function ask(question) {
     if (busy) return;
+    const myReq = ++requestSeq;
     const q = (question || input.value).trim();
     if (q.length < 3) { input.focus(); return; }
     busy = true;
@@ -298,6 +340,9 @@
     autoGrow();
     addMsg('user', fmt(q));
     const b = addMsg('bot', '<span class="typing">Ищу по сохбетам…</span>');
+    currentBubble = b;
+    currentController = new AbortController();
+    refreshStop();
     statusEl.textContent = 'Поиск и формулировка ответа…';
     statusEl.classList.remove('err');
     try {
@@ -305,6 +350,7 @@
       if (accessCode) headers['X-Access-Code'] = accessCode;
       const r = await fetch('/ask', {
         method: 'POST', headers,
+        signal: currentController.signal,
         body: JSON.stringify({ question: q, mode: modeSel.value })
       });
       if (r.status === 401) {
@@ -324,13 +370,24 @@
       statusEl.textContent = 'Готов';
     } catch (e) {
       b.classList.remove('typing');
-      b.innerHTML = '<span style="color:var(--err)">' + esc(e.message || String(e)) + '</span>';
-      statusEl.textContent = 'Ошибка';
-      statusEl.classList.add('err');
+      if (e.name === 'AbortError') {
+        b.innerHTML = '<span style="color:var(--muted)">Остановлено.</span>';
+        statusEl.textContent = 'Остановлено';
+        statusEl.classList.remove('err');
+      } else {
+        b.innerHTML = '<span style="color:var(--err)">' + esc(e.message || String(e)) + '</span>';
+        statusEl.textContent = 'Ошибка';
+        statusEl.classList.add('err');
+      }
     } finally {
-      busy = false;
-      sendBtn.disabled = false;
-      input.focus();
+      if (myReq === requestSeq) {
+        busy = false;
+        sendBtn.disabled = false;
+        currentController = null;
+        currentBubble = null;
+        refreshStop();
+        input.focus();
+      }
     }
   }
 
@@ -344,6 +401,26 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
   });
   sendBtn.addEventListener('click', () => ask());
+  stopBtn.addEventListener('click', () => {
+    requestSeq++;
+    if (currentController) currentController.abort();
+    if (currentTtsController) currentTtsController.abort();
+    if (currentAudio) {
+      try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
+      currentAudio = null;
+    }
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    speaking = false;
+    busy = false;
+    if (currentBubble) {
+      currentBubble.classList.remove('typing');
+      currentBubble.innerHTML = '<span style="color:var(--muted)">Остановлено.</span>';
+    }
+    statusEl.textContent = 'Остановлено';
+    statusEl.classList.remove('err');
+    sendBtn.disabled = false;
+    refreshStop();
+  });
   testVoiceBtn.addEventListener('click', () => {
     speak('Ассаляму алейкум. Это проверка выбранного голоса и скорости.', true);
   });
