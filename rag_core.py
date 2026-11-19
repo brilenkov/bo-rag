@@ -52,6 +52,9 @@ CITE_MIN_SCORE = float(os.environ.get("BO_CITE_MIN_SCORE", "0.63"))
 # Гибридный поиск: score = w*cosine + (1-w)*BM25. По eval 50/50 заметно лучше
 # чистого cosine на редких терминах (нафс, нисбат и т.п.).
 LEX_WEIGHT = float(os.environ.get("BO_LEX_WEIGHT", "0.5"))
+# HyDE по умолчанию выключен: по eval он ухудшает hit@8 и добавляет
+# лишний вызов LLM (~5-10 с). Включается BO_HYDE=1.
+HYDE_ENABLED = os.environ.get("BO_HYDE") == "1"
 
 log = logging.getLogger("rag_core")
 
@@ -248,8 +251,10 @@ def hyde(question: str) -> str:
 
 
 def retrieve(question: str, k_par: int = 8, k_qa: int = 6,
-             use_hyde: bool = True) -> dict:
-    """Поиск контекста. Возвращает paragraphs/qa hits + hyde text."""
+             use_hyde: bool = None) -> dict:
+    """Гибридный поиск (cosine + BM25). Возвращает paragraphs/qa + best_cos."""
+    if use_hyde is None:
+        use_hyde = HYDE_ENABLED
     store = get_store()
     search_text = hyde(question) if use_hyde else question
     vec = embed_text(search_text + "\n" + question)
@@ -388,7 +393,7 @@ def _collect_citations(ctx: dict, used: set | None) -> list:
     return citations
 
 
-def answer(question: str, mode: str = "zhivoy", use_hyde: bool = True,
+def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
            progress=None) -> dict:
     """Полный цикл: поиск → генерация → ответ с цитатами.
 

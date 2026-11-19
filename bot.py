@@ -405,7 +405,7 @@ def handle_question(msg: dict) -> None:
 
     try:
         from rag_core import answer
-        res = answer(question, mode, True, progress)
+        res = answer(question, mode, progress=progress)
     except Exception as e:
         log.exception("rag error")
         delete_message(chat_id, status_id)
@@ -617,7 +617,7 @@ class WebHandler(BaseHTTPRequestHandler):
         log.info("WEB Q ip=%s mode=%s: %s", ip, mode, question[:90])
         try:
             from rag_core import answer
-            res = answer(question, mode, True)
+            res = answer(question, mode)
             body = {
                 "answer": res["answer"],
                 "citations": res["citations"],
