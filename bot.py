@@ -624,9 +624,21 @@ def source_audio_ref(sohbet_date: str, sec):
     return None
 
 
+def set_audio_caption_link(chat_id: int, message_id: int, sec: int) -> bool:
+    """Делает подпись к аудио кликабельным таймкодом на это же сообщение."""
+    url = chat_message_url(chat_id, message_id, sec)
+    try:
+        tg("editMessageCaption", chat_id=chat_id, message_id=message_id,
+           caption=f'▶️ <a href="{url}">{fmt_ts(sec)}</a>',
+           parse_mode="HTML")
+        return True
+    except Exception as e:
+        log.warning("caption link failed: %s", e)
+        return False
+
+
 def send_top_source_audio(chat_id: int, res: dict) -> None:
-    """Одно сообщение с аудио основного источника: таймкод в подписи
-    кликабелен и запускает плеер с нужной секунды (проверено /srctest)."""
+    """Одно сообщение: скопированное аудио + кликабельный таймкод в подписи."""
     if not SOURCE_CHAT_ID:
         return
     for c in res.get("citations", []):
@@ -635,23 +647,20 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
             continue
         msg_id, sec = ref
         copied = tg("copyMessage", chat_id=chat_id,
-                    from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
-                    caption=(f"▶️ Основной источник: сохбет {c['sohbet_date']}, "
-                             f"слушайте с {fmt_ts(sec)}"))
-        # Ссылка на СКОПИРОВАННОЕ аудио в этом чате: не нужно быть
-        # участником группы-источника.
-        local_url = chat_message_url(chat_id, copied["message_id"], sec)
-        tg("sendMessage", chat_id=chat_id,
-           text=f'▶️ <a href="{local_url}">Слушайте с {fmt_ts(sec)}</a>',
-           parse_mode="HTML",
-           reply_to_message_id=copied["message_id"],
-           allow_sending_without_reply=True)
+                    from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id)
+        if not set_audio_caption_link(chat_id, copied["message_id"], sec):
+            url = chat_message_url(chat_id, copied["message_id"], sec)
+            tg("sendMessage", chat_id=chat_id,
+               text=f'▶️ <a href="{url}">{fmt_ts(sec)}</a>',
+               parse_mode="HTML",
+               reply_to_message_id=copied["message_id"],
+               allow_sending_without_reply=True)
         return
 
 
 def handle_play(chat_id: int, payload: str) -> None:
     """Deep link из веба: /start play_<date>_<sec> → копирует аудио в чат
-    и присылает reply-ссылку на нужную секунду."""
+    и ставит кликабельный таймкод в подпись (одно сообщение)."""
     if not SOURCE_CHAT_ID:
         send_message(chat_id, "Аудио-источник не настроен (BO_SOURCE_CHAT_ID).")
         return
@@ -670,14 +679,14 @@ def handle_play(chat_id: int, payload: str) -> None:
         return
     msg_id, offset = ref
     copied = tg("copyMessage", chat_id=chat_id,
-                from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
-                caption=f"Сохбет {date}, с {fmt_ts(sec)}")
-    local_url = chat_message_url(chat_id, copied["message_id"], offset)
-    tg("sendMessage", chat_id=chat_id,
-       text=f'▶️ <a href="{local_url}">Слушайте с {fmt_ts(sec)}</a>',
-       parse_mode="HTML",
-       reply_to_message_id=copied["message_id"],
-       allow_sending_without_reply=True)
+                from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id)
+    if not set_audio_caption_link(chat_id, copied["message_id"], offset):
+        url = chat_message_url(chat_id, copied["message_id"], offset)
+        tg("sendMessage", chat_id=chat_id,
+           text=f'▶️ <a href="{url}">{fmt_ts(sec)}</a>',
+           parse_mode="HTML",
+           reply_to_message_id=copied["message_id"],
+           allow_sending_without_reply=True)
 
 
 def handle_srctest(chat_id: int, text: str) -> None:
