@@ -106,6 +106,10 @@
     background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
     border-radius: 10px; padding: 7px 9px; font-size: 13px;
   }
+  .voice-row { border-top: 1px solid var(--line); padding-top: 8px; }
+  .tiny { font-size: 12px; color: var(--muted); }
+  #voice { min-width: 190px; max-width: 100%; }
+  input[type="range"] { width: 120px; accent-color: var(--accent); }
   label.toggle { font-size: 12.5px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
   .status { max-width: 900px; margin: 6px auto 0; padding: 0 18px; font-size: 11.5px; color: var(--muted); display: flex; justify-content: space-between; gap: 10px; }
   .status .err { color: var(--err); }
@@ -154,12 +158,19 @@
         </select>
         <button class="btn mic" id="mic" title="Голосовой ввод">🎤 Голос</button>
         <label class="toggle"><input type="checkbox" id="tts"> озвучивать</label>
-        <select class="select" id="voice" title="Голос озвучки">
-          <option value="female">Женский</option>
-          <option value="male">Мужской</option>
-        </select>
         <span class="grow"></span>
         <button class="btn primary" id="send">Отправить</button>
+      </div>
+      <div class="row voice-row">
+        <label class="tiny" for="voice">Голос</label>
+        <select class="select" id="voice" title="Голос озвучки">
+          <option value="male">Мужской</option>
+          <option value="female">Женский</option>
+        </select>
+        <label class="tiny" for="speed">Скорость</label>
+        <input type="range" id="speed" min="0.7" max="1.3" step="0.05" value="0.95">
+        <span class="tiny" id="speedVal">0.95×</span>
+        <button class="btn" id="testVoice" title="Прослушать выбранный голос">🔊 Проверить</button>
       </div>
     </div>
   </div>
@@ -179,10 +190,30 @@
   const modeSel = document.getElementById('mode');
   const ttsBox = document.getElementById('tts');
   const voiceSel = document.getElementById('voice');
+  const speed = document.getElementById('speed');
+  const speedVal = document.getElementById('speedVal');
+  const testVoiceBtn = document.getElementById('testVoice');
   const statusEl = document.getElementById('status');
   const leftEl = document.getElementById('left');
   let busy = false;
   let accessCode = localStorage.getItem('bo_access') || '';
+
+  speed.addEventListener('input', () => {
+    speedVal.textContent = Number(speed.value).toFixed(2) + '×';
+  });
+
+  // Подтягиваем реальные голоса провайдера (Yandex или Edge)
+  fetch('/tts/info').then(r => r.json()).then(d => {
+    if (d && Array.isArray(d.voices) && d.voices.length) {
+      voiceSel.innerHTML = d.voices.map(v =>
+        '<option value="' + esc(v.id) + '">' + esc(v.label) + '</option>').join('');
+      if (d.default) voiceSel.value = d.default;
+      if (d.speed) {
+        speed.value = d.speed;
+        speedVal.textContent = Number(d.speed).toFixed(2) + '×';
+      }
+    }
+  }).catch(() => {});
 
   function esc(s) {
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -210,14 +241,15 @@
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
     return b;
   }
-  async function speak(text) {
-    if (!ttsBox.checked) return;
+  async function speak(text, force = false) {
+    if (!force && !ttsBox.checked) return;
     const clean = text.replace(/\*\*/g, '').slice(0, 1200);
     // 1) Серверная озвучка: Yandex SpeechKit или Edge TTS
     try {
       const r = await fetch('/tts', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: clean, voice: voiceSel.value })
+        body: JSON.stringify({ text: clean, voice: voiceSel.value,
+                               speed: Number(speed.value) })
       });
       if (r.ok) {
         const blob = await r.blob();
@@ -233,9 +265,9 @@
     try {
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(clean);
-      u.lang = 'ru-RU'; u.rate = 0.98;
+      u.lang = 'ru-RU'; u.rate = Number(speed.value) || 0.95;
       const voices = speechSynthesis.getVoices().filter(x => x.lang && x.lang.toLowerCase().startsWith('ru'));
-      const male = voiceSel.value === 'male';
+      const male = /dmitry|filipp|ermil|zahar|male|муж/i.test(voiceSel.value);
       const v = voices.find(x => male
         ? /dmitr|pavel|yuri|male|муж/i.test(x.name)
         : /svetlana|irina|alena|female|жен/i.test(x.name)) || voices[0];
@@ -312,6 +344,9 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
   });
   sendBtn.addEventListener('click', () => ask());
+  testVoiceBtn.addEventListener('click', () => {
+    speak('Ассаляму алейкум. Это проверка выбранного голоса и скорости.', true);
+  });
   document.getElementById('sugg').addEventListener('click', e => {
     const b = e.target.closest('button[data-q]');
     if (b) ask(b.getAttribute('data-q'));
@@ -319,7 +354,7 @@
 
   // Голосовой ввод: Web Speech API (Chrome/Edge/Safari)
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let rec = null, listening = false;
+  let rec = null, listening = false, recBase = '';
   if (!SR) {
     micBtn.disabled = true;
     micBtn.title = 'Голосовой ввод не поддерживается этим браузером';
@@ -328,14 +363,18 @@
     rec.lang = 'ru-RU';
     rec.interimResults = true;
     rec.continuous = false;
+    rec.onstart = () => { recBase = input.value.trim(); };
     rec.onresult = ev => {
+      // Пересобираем поле из базового текста + всех результатов.
+      // Так interim не дублируется с final («агрессия агрессия»).
       let final = '', interim = '';
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const t = ev.results[i][0].transcript;
-        if (ev.results[i].isFinal) final += t; else interim += t;
+      for (let i = 0; i < ev.results.length; i++) {
+        const t = ev.results[i][0].transcript.trim();
+        if (!t) continue;
+        if (ev.results[i].isFinal) final += (final ? ' ' : '') + t;
+        else interim += (interim ? ' ' : '') + t;
       }
-      if (final) input.value = (input.value + ' ' + final).trim();
-      else if (interim) input.value = interim;
+      input.value = [recBase, final, interim].filter(Boolean).join(' ');
       autoGrow();
     };
     rec.onend = () => {

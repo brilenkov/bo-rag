@@ -88,14 +88,31 @@ YC_FOLDER_ID = (os.environ.get("YC_FOLDER_ID")
 YC_SA_ID = os.environ.get("YC_SA_ID", "").strip()
 YC_KEY_ID = os.environ.get("YC_KEY_ID", "").strip()
 YC_PRIVATE_KEY = os.environ.get("YC_PRIVATE_KEY", "").replace("\\n", "\n").strip()
-YC_VOICE = os.environ.get("YC_VOICE", "alena")
-EDGE_VOICE = os.environ.get("BO_EDGE_VOICE", "ru-RU-SvetlanaNeural")
+YC_VOICE = os.environ.get("YC_VOICE", "filipp")
+EDGE_VOICE = os.environ.get("BO_EDGE_VOICE", "ru-RU-DmitryNeural")
 TTS_CACHE = BOT_DIR / "data" / "tts_cache"
 _web_hits: dict[str, list] = {}
 _web_lock = threading.Lock()
 _yc_token = None
 _yc_token_exp = 0.0
 _yc_lock = threading.Lock()
+
+YANDEX_VOICES = [
+    {"id": "filipp", "label": "Филипп — спокойный мужской"},
+    {"id": "ermil", "label": "Ермил — декламационный мужской"},
+    {"id": "zahar", "label": "Захар — универсальный мужской"},
+    {"id": "alena", "label": "Алена — как Алиса"},
+    {"id": "jane", "label": "Джейн — спокойный женский"},
+    {"id": "omazh", "label": "Омаж — женский"},
+    {"id": "dasha", "label": "Даша — женский"},
+]
+EDGE_VOICES = [
+    {"id": "ru-RU-DmitryNeural", "label": "Дмитрий — мужской"},
+    {"id": "ru-RU-SvetlanaNeural", "label": "Светлана — женский"},
+    {"id": "ru-RU-DariyaNeural", "label": "Дария — женский"},
+]
+_YANDEX_IDS = {v["id"] for v in YANDEX_VOICES}
+_EDGE_IDS = {v["id"] for v in EDGE_VOICES}
 
 
 def yandex_ready() -> bool:
@@ -131,30 +148,41 @@ def yandex_iam_token() -> str:
 
 
 def resolve_voice(v: str = "") -> str:
-    """female/male (или имя голоса) → конкретный голос провайдера."""
+    """ID голоса или male/female → конкретный голос провайдера.
+
+    По умолчанию — мужской (БО мужчина): Yandex filipp / Edge Dmitry.
+    """
     v = (v or "").strip()
-    male = v.lower() in ("male", "m", "мужской") or "Dmitry" in v
+    low = v.lower()
+    male_hint = low in ("male", "m", "мужской") or any(
+        x in low for x in ("dmitry", "filipp", "philipp", "ermil", "zahar",
+                           "max", "nicolay", "kostya", "pavel"))
+    female_hint = low in ("female", "f", "женский") or any(
+        x in low for x in ("alena", "svetlana", "dariya", "jane", "omazh",
+                           "dasha", "masha", "yulya", "julia"))
+    male = male_hint or not female_hint
     if yandex_ready():
+        if v in _YANDEX_IDS:
+            return v
         return "filipp" if male else "alena"
-    if male:
-        return "ru-RU-DmitryNeural"
-    if v.startswith("ru-RU-"):
+    if v in _EDGE_IDS:
         return v
-    return EDGE_VOICE
+    return "ru-RU-DmitryNeural" if male else "ru-RU-SvetlanaNeural"
 
 
-def yandex_tts(text: str, voice: str = None) -> bytes:
+def yandex_tts(text: str, voice: str = None, speed: float = 0.95) -> bytes:
     if YC_API_KEY:
         auth = f"Api-Key {YC_API_KEY}"
     elif YC_SA_ID and YC_KEY_ID and YC_PRIVATE_KEY:
         auth = f"Bearer {yandex_iam_token()}"
     else:
         raise RuntimeError("Yandex SpeechKit не настроен")
+    speed = max(0.5, min(1.5, float(speed or 0.95)))
     data = urllib.parse.urlencode({
         "text": text[:1000],
         "lang": "ru-RU",
         "voice": voice or YC_VOICE,
-        "speed": "0.95",
+        "speed": f"{speed:.2f}",
         "format": "mp3",
         "folderId": YC_FOLDER_ID,
     }).encode()
@@ -167,7 +195,7 @@ def yandex_tts(text: str, voice: str = None) -> bytes:
         return r.read()
 
 
-def edge_tts_mp3(text: str, voice: str = None) -> bytes:
+def edge_tts_mp3(text: str, voice: str = None, speed: float = 0.95) -> bytes:
     """Бесплатный русский нейроголос Microsoft Edge (без ключа)."""
     import asyncio
     import hashlib
@@ -175,14 +203,16 @@ def edge_tts_mp3(text: str, voice: str = None) -> bytes:
     import edge_tts
 
     voice = voice or EDGE_VOICE
-    key = hashlib.sha1(f"{voice}\n{text}".encode("utf-8")).hexdigest()
+    speed = max(0.5, min(1.5, float(speed or 0.95)))
+    rate = f"{(speed - 1) * 100:+.0f}%"
+    key = hashlib.sha1(f"{voice}\n{rate}\n{text}".encode("utf-8")).hexdigest()
     TTS_CACHE.mkdir(parents=True, exist_ok=True)
     path = TTS_CACHE / f"{key}.mp3"
     if path.exists() and path.stat().st_size > 0:
         return path.read_bytes()
 
     async def run():
-        comm = edge_tts.Communicate(text[:1000], voice)
+        comm = edge_tts.Communicate(text[:1000], voice, rate=rate)
         await comm.save(str(path))
 
     asyncio.run(run())
@@ -690,6 +720,17 @@ class WebHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, json.dumps(
                     {"status": "error", "message": str(e)[:200]}))
+        elif path == "/tts/info":
+            provider = "yandex" if yandex_ready() else "edge"
+            voices = YANDEX_VOICES if provider == "yandex" else EDGE_VOICES
+            default = resolve_voice(YC_VOICE if provider == "yandex"
+                                    else EDGE_VOICE)
+            self._send(200, json.dumps({
+                "provider": provider,
+                "voices": voices,
+                "default": default,
+                "speed": 0.95,
+            }, ensure_ascii=False))
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -723,14 +764,23 @@ class WebHandler(BaseHTTPRequestHandler):
                 if not text:
                     raise ValueError("empty")
                 voice = resolve_voice(payload.get("voice"))
+                try:
+                    speed = float(payload.get("speed", 0.95))
+                except Exception:
+                    speed = 0.95
+                speed = max(0.5, min(1.5, speed))
                 if yandex_ready():
                     try:
-                        audio = yandex_tts(text, voice)
+                        audio = yandex_tts(text, voice, speed)
+                        log.info("tts yandex voice=%s speed=%.2f len=%d",
+                                 voice, speed, len(audio))
                     except Exception as e:
                         log.warning("yandex tts failed: %s — edge fallback", e)
-                        audio = edge_tts_mp3(text, resolve_voice("female"))
+                        audio = edge_tts_mp3(text, resolve_voice("male"), speed)
                 else:
-                    audio = edge_tts_mp3(text, voice)
+                    audio = edge_tts_mp3(text, voice, speed)
+                    log.info("tts edge voice=%s speed=%.2f len=%d",
+                             voice, speed, len(audio))
                 self._send(200, audio, "audio/mpeg")
             except Exception as e:
                 log.warning("tts failed: %s", e)
