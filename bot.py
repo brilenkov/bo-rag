@@ -81,20 +81,60 @@ WEB_DAILY_LIMIT = int(os.environ.get("BO_WEB_DAILY_LIMIT", "40"))
 WEB_PASSWORD = os.environ.get("BO_WEB_PASSWORD", "").strip()
 # Голос: Yandex SpeechKit (официальный, «как Алиса») при наличии ключей,
 # иначе Edge TTS (бесплатные русские нейроголоса Microsoft), иначе браузер.
-YC_API_KEY = os.environ.get("YC_API_KEY", "").strip()
-YC_FOLDER_ID = os.environ.get("YC_FOLDER_ID", "").strip()
+YC_API_KEY = (os.environ.get("YC_API_KEY")
+              or os.environ.get("YANDEX_CLOUD_API_KEY", "")).strip()
+YC_FOLDER_ID = (os.environ.get("YC_FOLDER_ID")
+                or os.environ.get("YANDEX_CLOUD_FOLDER_ID", "")).strip()
+YC_SA_ID = os.environ.get("YC_SA_ID", "").strip()
+YC_KEY_ID = os.environ.get("YC_KEY_ID", "").strip()
+YC_PRIVATE_KEY = os.environ.get("YC_PRIVATE_KEY", "").replace("\\n", "\n").strip()
 YC_VOICE = os.environ.get("YC_VOICE", "alena")
 EDGE_VOICE = os.environ.get("BO_EDGE_VOICE", "ru-RU-SvetlanaNeural")
 TTS_CACHE = BOT_DIR / "data" / "tts_cache"
 _web_hits: dict[str, list] = {}
 _web_lock = threading.Lock()
+_yc_token = None
+_yc_token_exp = 0.0
+_yc_lock = threading.Lock()
+
+
+def yandex_ready() -> bool:
+    return bool(YC_FOLDER_ID and (
+        YC_API_KEY or (YC_SA_ID and YC_KEY_ID and YC_PRIVATE_KEY)))
+
+
+def yandex_iam_token() -> str:
+    """IAM-токен по JWT сервисного аккаунта (живёт ~12 ч, кэшируем 50 мин)."""
+    global _yc_token, _yc_token_exp
+    with _yc_lock:
+        if _yc_token and time.time() < _yc_token_exp:
+            return _yc_token
+        import jwt  # PyJWT[crypto]
+        now = int(time.time())
+        payload = {
+            "iss": YC_SA_ID,
+            "aud": "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+            "iat": now,
+            "exp": now + 3600,
+        }
+        signed = jwt.encode(payload, YC_PRIVATE_KEY, algorithm="PS256",
+                            headers={"kid": YC_KEY_ID})
+        req = urllib.request.Request(
+            "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+            data=json.dumps({"jwt": signed}).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+        _yc_token = data["iamToken"]
+        _yc_token_exp = time.time() + 50 * 60
+        return _yc_token
 
 
 def resolve_voice(v: str = "") -> str:
     """female/male (или имя голоса) → конкретный голос провайдера."""
     v = (v or "").strip()
     male = v.lower() in ("male", "m", "мужской") or "Dmitry" in v
-    if YC_API_KEY and YC_FOLDER_ID:
+    if yandex_ready():
         return "filipp" if male else "alena"
     if male:
         return "ru-RU-DmitryNeural"
@@ -104,6 +144,12 @@ def resolve_voice(v: str = "") -> str:
 
 
 def yandex_tts(text: str, voice: str = None) -> bytes:
+    if YC_API_KEY:
+        auth = f"Api-Key {YC_API_KEY}"
+    elif YC_SA_ID and YC_KEY_ID and YC_PRIVATE_KEY:
+        auth = f"Bearer {yandex_iam_token()}"
+    else:
+        raise RuntimeError("Yandex SpeechKit не настроен")
     data = urllib.parse.urlencode({
         "text": text[:1000],
         "lang": "ru-RU",
@@ -115,7 +161,7 @@ def yandex_tts(text: str, voice: str = None) -> bytes:
     req = urllib.request.Request(
         "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize",
         data=data,
-        headers={"Authorization": f"Api-Key {YC_API_KEY}",
+        headers={"Authorization": auth,
                  "Content-Type": "application/x-www-form-urlencoded"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read()
@@ -348,10 +394,17 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
         if not ref:
             continue
         msg_id, sec = ref
-        tg("copyMessage", chat_id=chat_id,
-           from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
-           caption=(f"▶️ Основной источник: сохбет {c['sohbet_date']}, "
-                    f"слушайте с {fmt_ts(sec)}"))
+        copied = tg("copyMessage", chat_id=chat_id,
+                    from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
+                    caption=(f"▶️ Основной источник: сохбет {c['sohbet_date']}, "
+                             f"слушайте с {fmt_ts(sec)}"))
+        url = c.get("url")
+        if url:
+            tg("sendMessage", chat_id=chat_id,
+               text=f'▶️ <a href="{url}">Слушайте с {fmt_ts(sec)}</a>',
+               parse_mode="HTML",
+               reply_to_message_id=copied["message_id"],
+               allow_sending_without_reply=True)
         return
 
 
@@ -670,8 +723,12 @@ class WebHandler(BaseHTTPRequestHandler):
                 if not text:
                     raise ValueError("empty")
                 voice = resolve_voice(payload.get("voice"))
-                if YC_API_KEY and YC_FOLDER_ID:
-                    audio = yandex_tts(text, voice)
+                if yandex_ready():
+                    try:
+                        audio = yandex_tts(text, voice)
+                    except Exception as e:
+                        log.warning("yandex tts failed: %s — edge fallback", e)
+                        audio = edge_tts_mp3(text, resolve_voice("female"))
                 else:
                     audio = edge_tts_mp3(text, voice)
                 self._send(200, audio, "audio/mpeg")

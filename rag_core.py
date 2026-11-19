@@ -49,6 +49,11 @@ MIN_SCORE = float(os.environ.get("BO_MIN_SCORE", "0.60"))
 # отдалённые по теме фрагменты
 CITE_MIN_SCORE = float(os.environ.get("BO_CITE_MIN_SCORE", "0.63"))
 
+# Гейт «об этом не говорили»: чистый cosine может быть низким на длинных
+# бытовых вопросах, даже когда BM25 точно нашёл тему. Поэтому отказываем,
+# только если и cosine низкий, и гибридный rank слабый.
+RANK_MIN_SCORE = float(os.environ.get("BO_RANK_MIN_SCORE", "0.65"))
+
 # Гибридный поиск: score = w*cosine + (1-w)*BM25. По eval 50/50 заметно лучше
 # чистого cosine на редких терминах (нафс, нисбат и т.п.).
 LEX_WEIGHT = float(os.environ.get("BO_LEX_WEIGHT", "0.5"))
@@ -260,9 +265,12 @@ def retrieve(question: str, k_par: int = 8, k_qa: int = 6,
     vec = embed_text(search_text + "\n" + question)
     par, best_par = store.search("par", vec, k_par, question)
     qa, best_qa = store.search("qa", vec, k_qa, question)
+    hits = par + qa
     return {
         "hyde": search_text,
         "best_cos": max(best_par, best_qa),
+        "best_rank": max((h.get("rank", h["score"]) for h in hits),
+                         default=0.0),
         "paragraphs": par,
         "qa": qa,
     }
@@ -296,11 +304,16 @@ def _links() -> dict:
 
 
 def source_url(sohbet_date: str, sec):
-    """Ссылка t.me/c/<chat>/<msg_id> на сообщение с аудио (если есть карта)."""
+    """Ссылка на сообщение с аудио + ?t=<секунда> (если есть карта).
+
+    Для многотомных записей (parts) секунда пересчитывается в смещение
+    внутри конкретного сообщения.
+    """
     entry = (_links().get("dates") or {}).get(sohbet_date)
     if not entry:
         return None
     msg_id = entry.get("m")
+    offset = None
     parts = entry.get("parts") or []
     if msg_id is None and parts:
         msg_id = parts[0][0]
@@ -309,16 +322,23 @@ def source_url(sohbet_date: str, sec):
             for mid, dur in parts:
                 if sec < acc + dur:
                     msg_id = mid
+                    offset = int(sec - acc)
                     break
                 acc += dur
             else:
                 msg_id = parts[-1][0]
+                offset = int(sec - acc)
+    elif msg_id is not None and sec:
+        offset = int(sec)
     if msg_id is None:
         return None
     chat = _links().get("chat")
     if not chat:
         return None
-    return f"https://t.me/c/{chat}/{msg_id}"
+    url = f"https://t.me/c/{chat}/{msg_id}"
+    if offset is not None and offset > 0:
+        url += f"?t={offset}"
+    return url
 
 
 def build_context_block(ctx: dict, max_par: int = 6, max_qa: int = 4) -> str:
@@ -463,8 +483,10 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     stage("search")
     best = ctx.get("best_cos") or max(
         [h["score"] for h in ctx["paragraphs"] + ctx["qa"]], default=0)
+    best_rank = ctx.get("best_rank") or 0.0
+    log.info("best_cos=%.4f best_rank=%.4f", best, best_rank)
 
-    if best < MIN_SCORE:
+    if best < MIN_SCORE and best_rank < RANK_MIN_SCORE:
         if mode == "zhivoy":
             text = ("Об этом я не говорил — во всяком случае, в тех сохбетах, "
                     "что у меня записаны, этого нет. Спроси о другом, или "
