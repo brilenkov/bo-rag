@@ -275,6 +275,52 @@ def _fmt_ts(sec) -> str:
     return f"{sec//3600:02d}:{(sec%3600)//60:02d}:{sec%60:02d}"
 
 
+# ---------------- ссылки на исходные сообщения в Telegram ----------------
+
+_link_map = None
+_link_lock = threading.Lock()
+
+
+def _links() -> dict:
+    global _link_map
+    if _link_map is None:
+        with _link_lock:
+            if _link_map is None:
+                try:
+                    _link_map = json.loads(
+                        (DATA_DIR / "sohbet_links.json").read_text(
+                            encoding="utf-8"))
+                except Exception:
+                    _link_map = {}
+    return _link_map
+
+
+def source_url(sohbet_date: str, sec):
+    """Ссылка t.me/c/<chat>/<msg_id> на сообщение с аудио (если есть карта)."""
+    entry = (_links().get("dates") or {}).get(sohbet_date)
+    if not entry:
+        return None
+    msg_id = entry.get("m")
+    parts = entry.get("parts") or []
+    if msg_id is None and parts:
+        msg_id = parts[0][0]
+        if sec:
+            acc = 0
+            for mid, dur in parts:
+                if sec < acc + dur:
+                    msg_id = mid
+                    break
+                acc += dur
+            else:
+                msg_id = parts[-1][0]
+    if msg_id is None:
+        return None
+    chat = _links().get("chat")
+    if not chat:
+        return None
+    return f"https://t.me/c/{chat}/{msg_id}"
+
+
 def build_context_block(ctx: dict, max_par: int = 6, max_qa: int = 4) -> str:
     """Формирует блок контекста для промпта из найденных фрагментов."""
     lines = []
@@ -389,6 +435,7 @@ def _collect_citations(ctx: dict, used: set | None) -> list:
                 "sec": sec,
                 "score": h["score"],
                 "excerpt": _excerpt(h),
+                "url": source_url(date, sec),
             })
     return citations
 

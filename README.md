@@ -12,7 +12,7 @@ RAG-бот по корпусу сохбетов БО. Ищет по 59 тыс. �
 - **Голос**:
   - ввод — Web Speech API в браузере (Chrome/Edge/Safari, ru-RU);
   - озвучка — Yandex SpeechKit, если заданы `YC_API_KEY` + `YC_FOLDER_ID`,
-    иначе голос браузера (`speechSynthesis`).
+    иначе Edge TTS (русские нейроголоса Microsoft), иначе голос браузера.
 - **Ограничение доступа** к Telegram: allowlist по username/id.
 - **Лимит веб-чата**: N вопросов в сутки на IP (по умолчанию 40).
 - Дисклеймер: ответы по сохбетам, не терапия и не медицинская рекомендация.
@@ -45,7 +45,8 @@ RAG-бот по корпусу сохбетов БО. Ищет по 59 тыс. �
 | `BO_WEBHOOK_SECRET` | для webhook | секрет в URL и заголовке Telegram |
 | `BO_GEN_MODEL` | нет | модель LLM (`minimax-m3`) |
 | `YC_API_KEY`, `YC_FOLDER_ID` | опционально | Yandex SpeechKit TTS |
-| `YC_VOICE` | нет | голос Yandex (`filipp`) |
+| `YC_VOICE` | нет | голос Yandex (`alena` / `filipp`) |
+| `BO_EDGE_VOICE` | нет | Edge TTS (`ru-RU-SvetlanaNeural`) |
 | `BO_DEBUG` | нет | `1` — диагностика в логах |
 | `BO_WEB_ONLY` | нет | `1` — не запускать Telegram polling |
 

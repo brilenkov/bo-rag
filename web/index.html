@@ -75,6 +75,8 @@
     border-left: 2px solid var(--accent); padding: 2px 0 2px 9px;
   }
   .cite .date { color: var(--accent-2); }
+  .cite a { color: var(--accent-2); text-decoration: none; border-bottom: 1px dotted rgba(138,180,248,.55); }
+  .cite a:hover { color: #cfe1ff; }
   .meta { font-size: 11px; color: var(--muted); margin-top: 4px; padding: 0 2px; }
   footer { position: sticky; bottom: 0; background: linear-gradient(180deg, transparent, var(--bg) 30%); padding: 10px 0 18px; }
   .composer {
@@ -152,6 +154,10 @@
         </select>
         <button class="btn mic" id="mic" title="Голосовой ввод">🎤 Голос</button>
         <label class="toggle"><input type="checkbox" id="tts"> озвучивать</label>
+        <select class="select" id="voice" title="Голос озвучки">
+          <option value="female">Женский</option>
+          <option value="male">Мужской</option>
+        </select>
         <span class="grow"></span>
         <button class="btn primary" id="send">Отправить</button>
       </div>
@@ -172,6 +178,7 @@
   const micBtn = document.getElementById('mic');
   const modeSel = document.getElementById('mode');
   const ttsBox = document.getElementById('tts');
+  const voiceSel = document.getElementById('voice');
   const statusEl = document.getElementById('status');
   const leftEl = document.getElementById('left');
   let busy = false;
@@ -206,11 +213,11 @@
   async function speak(text) {
     if (!ttsBox.checked) return;
     const clean = text.replace(/\*\*/g, '').slice(0, 1200);
-    // 1) Yandex SpeechKit на сервере (если настроен)
+    // 1) Серверная озвучка: Yandex SpeechKit или Edge TTS
     try {
       const r = await fetch('/tts', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: clean })
+        body: JSON.stringify({ text: clean, voice: voiceSel.value })
       });
       if (r.ok) {
         const blob = await r.blob();
@@ -227,7 +234,11 @@
       speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(clean);
       u.lang = 'ru-RU'; u.rate = 0.98;
-      const v = speechSynthesis.getVoices().find(x => x.lang && x.lang.toLowerCase().startsWith('ru'));
+      const voices = speechSynthesis.getVoices().filter(x => x.lang && x.lang.toLowerCase().startsWith('ru'));
+      const male = voiceSel.value === 'male';
+      const v = voices.find(x => male
+        ? /dmitr|pavel|yuri|male|муж/i.test(x.name)
+        : /svetlana|irina|alena|female|жен/i.test(x.name)) || voices[0];
       if (v) u.voice = v;
       speechSynthesis.speak(u);
     } catch (e) {}
@@ -236,8 +247,11 @@
     if (!cites || !cites.length) return '';
     let h = '<span class="cite-label">Источники</span><div class="cites">';
     for (const c of cites) {
-      h += '<div class="cite"><span class="date">сохбет ' + esc(c.sohbet_date) + '</span>'
-        + (c.time ? ', ' + esc(c.time) : '')
+      const label = 'сохбет ' + esc(c.sohbet_date) + (c.time ? ', ' + esc(c.time) : '');
+      const head = c.url
+        ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">' + label + '</a>'
+        : label;
+      h += '<div class="cite">' + head
         + (c.excerpt ? ' — ' + esc(c.excerpt) : '') + '</div>';
     }
     return h + '</div>';

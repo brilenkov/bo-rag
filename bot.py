@@ -79,20 +79,35 @@ def tg_allowed(user: dict) -> bool:
 WEB_DIR = BOT_DIR / "web"
 WEB_DAILY_LIMIT = int(os.environ.get("BO_WEB_DAILY_LIMIT", "40"))
 WEB_PASSWORD = os.environ.get("BO_WEB_PASSWORD", "").strip()
-# Голос: если заданы ключи Yandex SpeechKit — озвучиваем через него,
-# иначе браузер делает это сам (Web Speech API).
+# Голос: Yandex SpeechKit (официальный, «как Алиса») при наличии ключей,
+# иначе Edge TTS (бесплатные русские нейроголоса Microsoft), иначе браузер.
 YC_API_KEY = os.environ.get("YC_API_KEY", "").strip()
 YC_FOLDER_ID = os.environ.get("YC_FOLDER_ID", "").strip()
-YC_VOICE = os.environ.get("YC_VOICE", "filipp")
+YC_VOICE = os.environ.get("YC_VOICE", "alena")
+EDGE_VOICE = os.environ.get("BO_EDGE_VOICE", "ru-RU-SvetlanaNeural")
+TTS_CACHE = BOT_DIR / "data" / "tts_cache"
 _web_hits: dict[str, list] = {}
 _web_lock = threading.Lock()
 
 
-def yandex_tts(text: str) -> bytes:
+def resolve_voice(v: str = "") -> str:
+    """female/male (или имя голоса) → конкретный голос провайдера."""
+    v = (v or "").strip()
+    male = v.lower() in ("male", "m", "мужской") or "Dmitry" in v
+    if YC_API_KEY and YC_FOLDER_ID:
+        return "filipp" if male else "alena"
+    if male:
+        return "ru-RU-DmitryNeural"
+    if v.startswith("ru-RU-"):
+        return v
+    return EDGE_VOICE
+
+
+def yandex_tts(text: str, voice: str = None) -> bytes:
     data = urllib.parse.urlencode({
         "text": text[:1000],
         "lang": "ru-RU",
-        "voice": YC_VOICE,
+        "voice": voice or YC_VOICE,
         "speed": "0.95",
         "format": "mp3",
         "folderId": YC_FOLDER_ID,
@@ -104,6 +119,28 @@ def yandex_tts(text: str) -> bytes:
                  "Content-Type": "application/x-www-form-urlencoded"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return r.read()
+
+
+def edge_tts_mp3(text: str, voice: str = None) -> bytes:
+    """Бесплатный русский нейроголос Microsoft Edge (без ключа)."""
+    import asyncio
+    import hashlib
+
+    import edge_tts
+
+    voice = voice or EDGE_VOICE
+    key = hashlib.sha1(f"{voice}\n{text}".encode("utf-8")).hexdigest()
+    TTS_CACHE.mkdir(parents=True, exist_ok=True)
+    path = TTS_CACHE / f"{key}.mp3"
+    if path.exists() and path.stat().st_size > 0:
+        return path.read_bytes()
+
+    async def run():
+        comm = edge_tts.Communicate(text[:1000], voice)
+        await comm.save(str(path))
+
+    asyncio.run(run())
+    return path.read_bytes()
 
 
 def web_rate_ok(ip: str) -> tuple[bool, int]:
@@ -129,16 +166,36 @@ STAGE_TEXT = {
 # ---------------- Telegram Bot API (urllib) ----------------
 
 def tg(method: str, http_timeout: int = 40, **params) -> dict:
-    """Вызов Bot API. Бросает RuntimeError при ошибке API."""
+    """Вызов Bot API. Повторяет 5xx/сетевые ошибки, бросает RuntimeError."""
     body = json.dumps(params).encode()
-    req = urllib.request.Request(
-        f"{API}/{method}", data=body,
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=http_timeout) as r:
-        data = json.loads(r.read())
-    if not data.get("ok"):
-        raise RuntimeError(f"TG {method}: {str(data)[:200]}")
-    return data["result"]
+    last = None
+    for attempt in range(3):
+        req = urllib.request.Request(
+            f"{API}/{method}", data=body,
+            headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=http_timeout) as r:
+                data = json.loads(r.read())
+            if not data.get("ok"):
+                raise RuntimeError(f"TG {method}: {str(data)[:200]}")
+            return data["result"]
+        except urllib.error.HTTPError as e:
+            last = e
+            if e.code >= 500 and attempt < 2:
+                time.sleep(1 + attempt * 2)
+                continue
+            try:
+                detail = e.read()[:300]
+            except Exception:
+                detail = b""
+            raise RuntimeError(f"TG {method} HTTP {e.code}: {detail!r}")
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            last = e
+            if attempt < 2:
+                time.sleep(1 + attempt * 2)
+                continue
+            raise
+    raise RuntimeError(f"TG {method} failed: {last}")
 
 
 def send_message(chat_id: int, text: str, markup: dict = None) -> int:
@@ -369,7 +426,7 @@ def format_answer(res: dict) -> str:
         text += "\n\n— Источники:"
         for c in res["citations"]:
             label = f"сохбет {c['sohbet_date']}"
-            url = source_link(c["sohbet_date"], c.get("sec"))
+            url = c.get("url") or source_link(c["sohbet_date"], c.get("sec"))
             if url:
                 label = f'<a href="{url}">{label}</a>'
             line = f"\n• {label}, {c['time']}"
@@ -606,24 +663,23 @@ class WebHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/tts":
-            if not (YC_API_KEY and YC_FOLDER_ID):
-                self._send(501, json.dumps({
-                    "error": "tts",
-                    "message": "Yandex SpeechKit не настроен — используйте голос браузера.",
-                }, ensure_ascii=False))
-                return
             try:
                 n = int(self.headers.get("Content-Length") or 0)
                 payload = json.loads(self.rfile.read(n) or b"{}")
                 text = (payload.get("text") or "").strip()[:1000]
                 if not text:
                     raise ValueError("empty")
-                audio = yandex_tts(text)
+                voice = resolve_voice(payload.get("voice"))
+                if YC_API_KEY and YC_FOLDER_ID:
+                    audio = yandex_tts(text, voice)
+                else:
+                    audio = edge_tts_mp3(text, voice)
                 self._send(200, audio, "audio/mpeg")
             except Exception as e:
                 log.warning("tts failed: %s", e)
-                self._send(500, json.dumps(
-                    {"error": "tts", "message": str(e)[:200]},
+                self._send(503, json.dumps(
+                    {"error": "tts",
+                     "message": "Серверная озвучка недоступна — включите голос браузера."},
                     ensure_ascii=False))
             return
 
