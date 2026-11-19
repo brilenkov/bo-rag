@@ -45,6 +45,13 @@ user_mode: dict[int, str] = {}
 SELF_PING_INTERVAL = 600  # 10 мин < 15 мин лимита Render
 DEBUG = os.environ.get("BO_DEBUG") == "1"
 
+# Webhook-режим для Telegram (надёжнее polling на free tier: не конфликтует
+# с другими getUpdates и не требует постоянно живого процесса).
+WEBHOOK_SECRET = os.environ.get("BO_WEBHOOK_SECRET", "").strip()
+USE_WEBHOOK = (os.environ.get("BO_USE_WEBHOOK") == "1"
+               and bool(WEBHOOK_SECRET))
+_tg_lock = threading.Lock()
+
 # ---------------- доступ к Telegram-боту ----------------
 # Пустой allowlist = доступ всем (локальная разработка).
 # На проде: BO_ALLOWED_USERNAMES=alexenur,tgnamel
@@ -484,8 +491,36 @@ def handle_update(upd: dict) -> None:
         handle_question(msg)
 
 
+def _run_update(upd: dict) -> None:
+    """Обработка обновления в отдельном потоке (webhook уже ответил 200)."""
+    with _tg_lock:
+        try:
+            handle_update(upd)
+        except Exception:
+            log.exception("update handler error")
+
+
+def set_webhook() -> None:
+    url = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if not url:
+        log.warning("RENDER_EXTERNAL_URL не задан — webhook не установлен")
+        return
+    hook = f"{url}/tg/{WEBHOOK_SECRET}"
+    try:
+        tg("setWebhook", url=hook, secret_token=WEBHOOK_SECRET,
+           allowed_updates=["message", "callback_query"],
+           drop_pending_updates=False)
+        log.info("webhook set: %s", hook)
+    except Exception as e:
+        log.error("setWebhook failed: %s", e)
+
+
 def polling_loop() -> None:
     offset = 0
+    try:
+        tg("deleteWebhook", drop_pending_updates=False)
+    except Exception:
+        pass
     log.info("bot starting (long polling), debug=%s", DEBUG)
     while True:
         try:
@@ -552,6 +587,24 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlparse(self.path).path
+
+        # Telegram webhook: отвечаем 200 сразу, обработку — в фоне
+        if USE_WEBHOOK and path == f"/tg/{WEBHOOK_SECRET}":
+            if (self.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+                    != WEBHOOK_SECRET):
+                self._send(403, json.dumps({"error": "forbidden"}))
+                return
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                upd = json.loads(self.rfile.read(n) or b"{}")
+            except Exception:
+                self._send(400, json.dumps({"error": "bad update"}))
+                return
+            threading.Thread(target=_run_update, args=(upd,),
+                             daemon=True).start()
+            self._send(200, json.dumps({"ok": True}))
+            return
+
         if path == "/tts":
             if not (YC_API_KEY and YC_FOLDER_ID):
                 self._send(501, json.dumps({
@@ -673,6 +726,11 @@ def main() -> None:
             time.sleep(3600)
     if not TOKEN:
         sys.exit("Нет токена: env BO_BOT_TOKEN")
+    if USE_WEBHOOK:
+        set_webhook()
+        log.info("webhook mode — polling не запускаем")
+        while True:
+            time.sleep(3600)
     polling_loop()
 
 
