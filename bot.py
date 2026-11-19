@@ -715,6 +715,14 @@ def self_ping_loop() -> None:
                 log.info("self-ping %s -> %s", target, r.status)
         except Exception as e:
             log.warning("self-ping failed: %s", e)
+        if USE_WEBHOOK:
+            try:
+                info = tg("getWebhookInfo", http_timeout=20)
+                if not info.get("url"):
+                    log.warning("webhook потерян — восстанавливаю")
+                    set_webhook()
+            except Exception as e:
+                log.warning("webhook check failed: %s", e)
 
 
 def main() -> None:

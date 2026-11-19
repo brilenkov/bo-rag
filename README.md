@@ -5,8 +5,9 @@ RAG-бот по корпусу сохбетов БО. Ищет по 59 тыс. �
 
 ## Что умеет
 
-- **Telegram-бот** (`@alexenur_bo_bot`): long polling, режимы «Живой» /
-  «Для публикации», источники со ссылками на аудио в группе.
+- **Telegram-бот** (`@alexenur_bo_bot`): webhook (secret token) или
+  long polling, режимы «Живой» / «Для публикации», источники со ссылками
+  на аудио в группе.
 - **Веб-чат** на том же сервисе: `GET /` — страница чата, `POST /ask` — JSON.
 - **Голос**:
   - ввод — Web Speech API в браузере (Chrome/Edge/Safari, ru-RU);
@@ -40,6 +41,8 @@ RAG-бот по корпусу сохбетов БО. Ищет по 59 тыс. �
 | `BO_ALLOWED_IDS` | опционально | числовые TG id |
 | `BO_WEB_PASSWORD` | опционально | код доступа к веб-чату |
 | `BO_WEB_DAILY_LIMIT` | нет | лимит вопросов на IP в сутки (40) |
+| `BO_USE_WEBHOOK` | нет | `1` — Telegram webhook вместо polling |
+| `BO_WEBHOOK_SECRET` | для webhook | секрет в URL и заголовке Telegram |
 | `BO_GEN_MODEL` | нет | модель LLM (`minimax-m3`) |
 | `YC_API_KEY`, `YC_FOLDER_ID` | опционально | Yandex SpeechKit TTS |
 | `YC_VOICE` | нет | голос Yandex (`filipp`) |
