@@ -541,6 +541,24 @@ def fmt_ts(seconds: int) -> str:
     return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
 
+def chat_message_url(chat_id: int, message_id: int, sec: int = None) -> str:
+    """Ссылка на сообщение в этом чате (для скопированного аудио).
+
+    Для супергрупп/каналов Telegram использует t.me/c/<id без -100>/<msg>;
+    для приватного чата — тот же формат с id пользователя (проверяем на
+    практике; если клиент не откроет — останется ссылка на оригинал).
+    """
+    cid = str(chat_id)
+    if cid.startswith("-100"):
+        cid = cid[4:]
+    elif cid.startswith("-"):
+        cid = cid[1:]
+    url = f"https://t.me/c/{cid}/{message_id}"
+    if sec and int(sec) > 0:
+        url += f"?t={int(sec)}"
+    return url
+
+
 # Карта «дата сохбета → message_id в группе-источнике» (data/sohbet_links.json,
 # скачивается fetch_assets.py). Ссылка t.me/c/… открывается только
 # у участников группы — это и нужно для проверки ответов.
@@ -620,14 +638,46 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
                     from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
                     caption=(f"▶️ Основной источник: сохбет {c['sohbet_date']}, "
                              f"слушайте с {fmt_ts(sec)}"))
-        url = c.get("url")
-        if url:
-            tg("sendMessage", chat_id=chat_id,
-               text=f'▶️ <a href="{url}">Слушайте с {fmt_ts(sec)}</a>',
-               parse_mode="HTML",
-               reply_to_message_id=copied["message_id"],
-               allow_sending_without_reply=True)
+        # Ссылка на СКОПИРОВАННОЕ аудио в этом чате: не нужно быть
+        # участником группы-источника.
+        local_url = chat_message_url(chat_id, copied["message_id"], sec)
+        tg("sendMessage", chat_id=chat_id,
+           text=f'▶️ <a href="{local_url}">Слушайте с {fmt_ts(sec)}</a>',
+           parse_mode="HTML",
+           reply_to_message_id=copied["message_id"],
+           allow_sending_without_reply=True)
         return
+
+
+def handle_play(chat_id: int, payload: str) -> None:
+    """Deep link из веба: /start play_<date>_<sec> → копирует аудио в чат
+    и присылает reply-ссылку на нужную секунду."""
+    if not SOURCE_CHAT_ID:
+        send_message(chat_id, "Аудио-источник не настроен (BO_SOURCE_CHAT_ID).")
+        return
+    if "_" not in payload:
+        send_message(chat_id, "Формат: /start play_2026-05-31_123")
+        return
+    date, sec_str = payload.rsplit("_", 1)
+    try:
+        sec = int(sec_str)
+    except Exception:
+        sec = 0
+    ref = source_audio_ref(date, sec)
+    if not ref:
+        send_message(chat_id, f"Не нашёл аудио для {date}. "
+                              "Возможно, это практика без карты сообщений.")
+        return
+    msg_id, offset = ref
+    copied = tg("copyMessage", chat_id=chat_id,
+                from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
+                caption=f"Сохбет {date}, с {fmt_ts(sec)}")
+    local_url = chat_message_url(chat_id, copied["message_id"], offset)
+    tg("sendMessage", chat_id=chat_id,
+       text=f'▶️ <a href="{local_url}">Слушайте с {fmt_ts(sec)}</a>',
+       parse_mode="HTML",
+       reply_to_message_id=copied["message_id"],
+       allow_sending_without_reply=True)
 
 
 def handle_srctest(chat_id: int, text: str) -> None:
@@ -702,11 +752,17 @@ def format_answer(res: dict) -> str:
     if res["citations"]:
         text += "\n\n— Источники:"
         for c in res["citations"]:
-            label = f"сохбет {c['sohbet_date']}"
+            if (c.get("source_type") == "method"
+                    and str(c.get("title", "")).startswith("Практика")):
+                label = c.get("title") or f"практика {c['sohbet_date']}"
+            else:
+                label = f"сохбет {c['sohbet_date']}"
             url = c.get("url") or source_link(c["sohbet_date"], c.get("sec"))
             if url:
                 label = f'<a href="{url}">{label}</a>'
-            line = f"\n• {label}, {c['time']}"
+            line = f"\n• {label}"
+            if c.get("source_type") != "method":
+                line += f", {c['time']}"
             if c.get("excerpt"):
                 line += f" — <i>{html_escape(c['excerpt'])}</i>"
             text += line
@@ -900,6 +956,13 @@ def handle_update(upd: dict) -> None:
         send_message(chat_id, "Доступ к этому боту ограничен.")
         return
 
+    if text.startswith("/start play_"):
+        try:
+            handle_play(chat_id, text[len("/start play_"):])
+        except Exception as e:
+            log.exception("play deep link error")
+            send_message(chat_id, f"Не удалось открыть аудио: {e}")
+        return
     if text.startswith("/start"):
         send_message(chat_id,
                      "Ассаляму алейкум. Я — цифровой двойник Бориса Олеговича, "

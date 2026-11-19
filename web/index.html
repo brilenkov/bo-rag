@@ -77,6 +77,7 @@
   .cite .date { color: var(--accent-2); }
   .cite a { color: var(--accent-2); text-decoration: none; border-bottom: 1px dotted rgba(138,180,248,.55); }
   .cite a:hover { color: #cfe1ff; }
+  .tgplay { margin-left: 7px; font-size: 12px; white-space: nowrap; }
   .meta { font-size: 11px; color: var(--muted); margin-top: 4px; padding: 0 2px; }
   footer { position: sticky; bottom: 0; background: linear-gradient(180deg, transparent, var(--bg) 30%); padding: 10px 0 18px; }
   .composer {
@@ -320,11 +321,19 @@
     if (!cites || !cites.length) return '';
     let h = '<span class="cite-label">Источники</span><div class="cites">';
     for (const c of cites) {
-      const label = 'сохбет ' + esc(c.sohbet_date) + (c.time ? ', ' + esc(c.time) : '');
+      const isPractice = c.source_type === 'method' && c.title;
+      const label = isPractice
+        ? esc(c.title)
+        : 'сохбет ' + esc(c.sohbet_date) + (c.time ? ', ' + esc(c.time) : '');
       const head = c.url
         ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">' + label + '</a>'
         : label;
-      h += '<div class="cite">' + head
+      const tgPlay = /^\d{4}-\d{2}-\d{2}$/.test(c.sohbet_date) && c.sec != null
+        ? ' <a class="tgplay" target="_blank" rel="noopener" href="https://t.me/alexenur_bo_bot?start=play_'
+          + encodeURIComponent(c.sohbet_date) + '_' + encodeURIComponent(c.sec)
+          + '">🎧 в TG</a>'
+        : '';
+      h += '<div class="cite">' + head + tgPlay
         + (c.excerpt ? ' — ' + esc(c.excerpt) : '') + '</div>';
     }
     return h + '</div>';

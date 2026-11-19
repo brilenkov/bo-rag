@@ -351,9 +351,14 @@ def build_context_block(ctx: dict, max_par: int = 6, max_qa: int = 4) -> str:
             f"спрашивает: {qa.get('asked_by','—')}\n"
             f"Вопрос: {qa.get('question','')}\nОтвет БО: {qa.get('answer','')}")
     for i, p in enumerate(ctx["paragraphs"][:max_par], 1):
+        if (p.get("source_type") == "method"
+                and str(p.get("title", "")).startswith("Практика")):
+            src = f'{p.get("title")}'
+        else:
+            src = (f"сохбет {p.get('sohbet_date', '?')} "
+                   f"({_fmt_ts(p.get('start_sec'))})")
         lines.append(
-            f"[P{i}] сохбет {p.get('sohbet_date','?')} "
-            f"({_fmt_ts(p.get('start_sec'))}), {p.get('speaker_name','?')}:\n"
+            f"[P{i}] {src}, {p.get('speaker_name','?')}:\n"
             f"{p.get('text','')}")
     return "\n\n".join(lines)
 
@@ -445,8 +450,9 @@ def _collect_citations(ctx: dict, used: set | None) -> list:
         date = h.get("sohbet_date", "?")
         # слияние: тот же сохбет, разница <= 120 с
         for c in citations:
-            if (c["sohbet_date"] == date and c["sec"] and sec
-                    and abs(c["sec"] - sec) <= 120):
+            if (c["sohbet_date"] == date
+                    and (c["sec"] is None or sec is None
+                         or abs(c["sec"] - sec) <= 120)):
                 break
         else:
             citations.append({
@@ -456,6 +462,8 @@ def _collect_citations(ctx: dict, used: set | None) -> list:
                 "score": h["score"],
                 "excerpt": _excerpt(h),
                 "url": source_url(date, sec),
+                "source_type": h.get("source_type"),
+                "title": h.get("title"),
             })
     return citations
 
