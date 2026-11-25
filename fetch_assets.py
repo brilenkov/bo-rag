@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fetch_assets.py — скачивает плоский стор + GGUF-модель из release-ассета.
 
-Ассет bo_rag_bot_assets_v13.tar.gz (приватный репо → нужен env GH_PAT):
+Ассет bo_rag_bot_assets_v14.tar.gz (приватный репо → нужен env GH_PAT):
     data/vectors_par.npy, data/vectors_qa.npy          — вектора (384d)
     data/payloads.db, data/meta.json                  — тексты и метаданные (sqlite)
     data/lex_par.npz, data/lex_qa.npz                 — BM25-индекс (гибрид)
@@ -22,7 +22,7 @@ from pathlib import Path
 
 BOT_DIR = Path(__file__).resolve().parent
 ASSET_URL = ("https://api.github.com/repos/brilenkov/brain-tools/"
-             "releases/assets/792816672")
+             "releases/assets/792966231")
 # llama-cpp-python на PyPI только sdist (компиляция падает на Render),
 # поэтому wheel собран локально (glibc 2.36) и лежит рядом ассетом.
 WHEEL_URL = ("https://api.github.com/repos/brilenkov/brain-tools/"
@@ -37,6 +37,8 @@ def already_ok() -> bool:
     return ((BOT_DIR / "data" / "meta.json").exists()
             and list((BOT_DIR / "models").glob("*.gguf")) != []
             and (BOT_DIR / "data" / "sohbet_links.json").exists()
+            and (BOT_DIR / "data" / "practice_links.json").exists()
+            and list((BOT_DIR / "data" / "practice_audio").glob("*"))
             and (BOT_DIR / "data" / "lex_par.npz").exists()
             and (BOT_DIR / "data" / "lex_qa.npz").exists()
             and (BOT_DIR / "data" / "lex_stems.json.gz").exists()
@@ -67,7 +69,7 @@ def main() -> int:
         "User-Agent": "bo-rag-bot-build",
     })
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-        print("скачиваю bo_rag_bot_assets_v13.tar.gz …", flush=True)
+        print("скачиваю bo_rag_bot_assets_v14.tar.gz …", flush=True)
         download(ASSET_URL, pat, tmp.name)
         tmp_path = tmp.name
     print("скачано, распаковываю …", flush=True)

@@ -172,6 +172,14 @@ class FlatStore:
             got = {i: json.loads(p) for i, p in cur.fetchall()}
         return [got[int(i)] for i in ids]
 
+    def by_source(self, tag: str, source_id: str) -> list:
+        """Все фрагменты одного источника (например practice:Зикр_1)."""
+        with self._db_lock:
+            cur = self.db.execute(
+                f"SELECT payload FROM {tag} WHERE "
+                "json_extract(payload, '$.sohbet_date') = ?", (source_id,))
+            return [json.loads(p) for (p,) in cur.fetchall()]
+
     def search(self, tag: str, vec, k: int, question: str = None):
         """Возвращает (hits, best_cosine). Сортировка — по гибридному score,
         в поле score остаётся чистый cosine (для цитат и порога)."""
@@ -301,6 +309,34 @@ def _links() -> dict:
                 except Exception:
                     _link_map = {}
     return _link_map
+
+
+# ---------------- аудио практик (тема 10 группы-источника) ----------------
+
+_practice_map = None
+_practice_lock = threading.Lock()
+
+
+def practice_ref(source_id: str):
+    """Запись practice_links.json для practice-источника или None."""
+    global _practice_map
+    if _practice_map is None:
+        with _practice_lock:
+            if _practice_map is None:
+                try:
+                    data = json.loads(
+                        (DATA_DIR / "practice_links.json").read_text(
+                            encoding="utf-8"))
+                    _practice_map = data.get("items") or {}
+                except Exception:
+                    _practice_map = {}
+    return _practice_map.get(source_id)
+
+
+def practice_links() -> dict:
+    """Вся карта practice-источник → аудио."""
+    practice_ref("")
+    return _practice_map or {}
 
 
 def source_url(sohbet_date: str, sec):
@@ -537,7 +573,7 @@ def _citation_dict(h: dict) -> dict:
     sec = h.get("timestamp_sec") or h.get("start_sec")
     sec = int(float(sec)) if sec else None
     date = h.get("sohbet_date", "?")
-    return {
+    out = {
         "sohbet_date": date,
         "time": _fmt_ts(sec),
         "sec": sec,
@@ -547,6 +583,12 @@ def _citation_dict(h: dict) -> dict:
         "source_type": h.get("source_type"),
         "title": h.get("title"),
     }
+    p = practice_ref(date)
+    if p:
+        out["audio_mid"] = p.get("m")
+        out["audio_url"] = f"/practice/{p.get('m')}"
+        out["audio_dur"] = p.get("dur")
+    return out
 
 
 def _collect_citations(ctx: dict, used: set | None, max_par: int = 6,
@@ -605,6 +647,32 @@ def apply_boosts(question: str, ctx: dict) -> None:
     ctx["qa"].sort(key=lambda h: -h.get("rank", h["score"]))
 
 
+def ensure_named_practice(question: str, ctx: dict) -> None:
+    """Для «зикр 1…5» гарантированно добавляет аудиопрактику в контекст:
+    по номеру векторный поиск часто промахивается (цифра не индексируется)."""
+    m = re.search(r"зикр\s*(№\s*|номер\s*)?([1-5])\b", question, re.I)
+    if not m:
+        return
+    n = m.group(2)
+    sid = ("practice:Зикр_номер_5"
+           if (n == "5" and m.group(1)) else f"practice:Зикр_{n}")
+    try:
+        rows = get_store().by_source("par", sid)
+    except Exception:
+        return
+    if not rows:
+        return
+    have = {(h.get("sohbet_date"), h.get("paragraph_idx"))
+            for h in ctx["paragraphs"]}
+    rows = [r for r in rows
+            if (r.get("sohbet_date"), r.get("paragraph_idx")) not in have]
+    rows.sort(key=lambda r: r.get("paragraph_idx", 0))
+    for r in rows[:4]:
+        r["score"] = 0.92
+        r["rank"] = 0.92
+        ctx["paragraphs"].insert(0, r)
+
+
 def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
            progress=None, cancel=None) -> dict:
     """Полный цикл: поиск → генерация → ответ с цитатами.
@@ -653,6 +721,7 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                    k_qa=4 if (practice or centers) else 6,
                    use_hyde=use_hyde)
     apply_boosts(question, ctx)
+    ensure_named_practice(question, ctx)
     stage("search")
     best = ctx.get("best_cos") or max(
         [h["score"] for h in ctx["paragraphs"] + ctx["qa"]], default=0)

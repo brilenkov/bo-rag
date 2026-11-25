@@ -563,6 +563,33 @@ def chat_message_url(chat_id: int, message_id: int, sec: int = None) -> str:
 # скачивается fetch_assets.py). Ссылка t.me/c/… открывается только
 # у участников группы — это и нужно для проверки ответов.
 LINKS_PATH = BOT_DIR / "data" / "sohbet_links.json"
+PRACTICE_AUDIO_DIR = Path(os.environ.get(
+    "BO_PRACTICE_AUDIO_DIR", str(BOT_DIR / "data" / "practice_audio")))
+
+
+def practice_links() -> dict:
+    """Карта practice-источник → сообщение с аудио (practice_links.json)."""
+    try:
+        from rag_core import practice_links as _pl
+        return _pl()
+    except Exception:
+        return {}
+
+
+def practice_by_mid(mid: int):
+    for sid, v in practice_links().items():
+        if int(v.get("m") or 0) == int(mid):
+            return sid, v
+    return None, None
+
+
+def practice_audio_path(mid: int):
+    rec = practice_by_mid(mid)[1]
+    if not rec:
+        return None
+    ext = Path(rec.get("file") or "x.mp3").suffix or ".mp3"
+    p = PRACTICE_AUDIO_DIR / f"{int(mid)}{ext}"
+    return p if p.exists() else None
 _link_map: dict | None = None
 
 
@@ -642,6 +669,14 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
     if not SOURCE_CHAT_ID:
         return
     for c in res.get("citations", []):
+        mid = c.get("audio_mid")
+        if mid:
+            try:
+                tg("copyMessage", chat_id=chat_id,
+                   from_chat_id=int(SOURCE_CHAT_ID), message_id=int(mid))
+            except Exception as e:
+                log.warning("practice audio copy failed mid=%s: %s", mid, e)
+            return
         ref = source_audio_ref(c["sohbet_date"], c.get("sec"))
         if not ref:
             continue
@@ -656,6 +691,24 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
                reply_to_message_id=copied["message_id"],
                allow_sending_without_reply=True)
         return
+
+
+def handle_play_practice(chat_id: int, payload: str) -> None:
+    """Deep link из веба: /start playp_<msg_id> → копирует аудио практики."""
+    if not SOURCE_CHAT_ID:
+        send_message(chat_id, "Аудио-источник не настроен (BO_SOURCE_CHAT_ID).")
+        return
+    try:
+        mid = int(payload.split("_")[0])
+    except Exception:
+        send_message(chat_id, "Формат: /start playp_266")
+        return
+    sid, rec = practice_by_mid(mid)
+    if not rec:
+        send_message(chat_id, f"Не нашёл аудио практики для сообщения {mid}.")
+        return
+    tg("copyMessage", chat_id=chat_id,
+       from_chat_id=int(SOURCE_CHAT_ID), message_id=mid)
 
 
 def handle_play(chat_id: int, payload: str) -> None:
@@ -965,6 +1018,13 @@ def handle_update(upd: dict) -> None:
         send_message(chat_id, "Доступ к этому боту ограничен.")
         return
 
+    if text.startswith("/start playp_"):
+        try:
+            handle_play_practice(chat_id, text[len("/start playp_"):])
+        except Exception as e:
+            log.exception("practice play deep link error")
+            send_message(chat_id, f"Не удалось открыть аудио: {e}")
+        return
     if text.startswith("/start play_"):
         try:
             handle_play(chat_id, text[len("/start play_"):])
@@ -1086,6 +1146,60 @@ class WebHandler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _send_file(self, p: Path, ctype: str):
+        """Отдаёт файл с поддержкой Range (перемотка в <audio>)."""
+        total = p.stat().st_size
+        rng = self.headers.get("Range") or ""
+        start, end = 0, total - 1
+        code = 200
+        if rng.startswith("bytes="):
+            try:
+                spec = rng[len("bytes="):].split(",")[0]
+                a, b = spec.split("-", 1)
+                if a:
+                    start = int(a)
+                    end = int(b) if b else total - 1
+                else:
+                    start = max(0, total - int(b))
+                start = max(0, min(start, total - 1))
+                end = max(start, min(end, total - 1))
+                code = 206
+            except Exception:
+                self._send(416, b"", "text/plain")
+                return
+        length = end - start + 1
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(length))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "private, max-age=3600")
+        if code == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+        self.end_headers()
+        if self.command == "HEAD":
+            return
+        with open(p, "rb") as f:
+            f.seek(start)
+            left = length
+            while left > 0:
+                chunk = f.read(min(262144, left))
+                if not chunk:
+                    break
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                left -= len(chunk)
+
+    def _audio_allowed(self) -> bool:
+        if not WEB_PASSWORD:
+            return True
+        q = urllib.parse.parse_qs(
+            urllib.parse.urlparse(self.path).query)
+        code = (q.get("code") or [""])[0] or self.headers.get(
+            "X-Access-Code", "")
+        return code == WEB_PASSWORD
+
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
         if path in ("/", "/index.html"):
@@ -1116,6 +1230,26 @@ class WebHandler(BaseHTTPRequestHandler):
                 "default": default,
                 "speed": 0.95,
             }, ensure_ascii=False))
+        elif path.startswith("/practice/"):
+            if not self._audio_allowed():
+                self._send(401, json.dumps(
+                    {"error": "auth", "message": "Нужен код доступа."},
+                    ensure_ascii=False))
+                return
+            mid_s = path.rsplit("/", 1)[-1].split(".")[0]
+            try:
+                mid = int(mid_s)
+            except Exception:
+                self._send(404, json.dumps({"error": "not found"}))
+                return
+            p = practice_audio_path(mid)
+            if not p:
+                self._send(404, json.dumps(
+                    {"error": "no audio", "mid": mid}, ensure_ascii=False))
+                return
+            ctype = ("audio/wav" if p.suffix.lower() == ".wav"
+                     else "audio/mpeg")
+            self._send_file(p, ctype)
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
