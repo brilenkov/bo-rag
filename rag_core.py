@@ -372,6 +372,7 @@ SYSTEM_ZHIVOY = (
     "Не сравнивай и не объединяй понятия из разных фрагментов контекста, "
     "если такого сравнения нет в самом тексте: каждый фрагмент — о своём."
     " Термины пиши канонически: нафс, ихляс, тавакуль, зикр, тарикат (даже если в контексте встречается иное написание)."
+    " Если вопрос содержит тему, которой нет в контексте, не заменяй её похожей историей: скажи, что об этом в записях не говорилось."
     "Не упоминай, что ты ИИ или двойник — говори как БО."
 )
 
@@ -385,6 +386,7 @@ SYSTEM_PUBLICATION = (
     "если такого сравнения нет в самом тексте. Если материала мало — "
     "коротко скажи, что по этой теме записей не найдено."
     " Термины пиши канонически: нафс, ихляс, тавакуль, зикр, тарикат (даже если в контексте встречается иное написание)."
+    " Если вопрос содержит тему, которой нет в контексте, не заменяй её похожей историей: скажи, что об этом в записях не говорилось."
 )
 
 # Инструкция самопометки источников: LLM в конце ответа указывает, какие
@@ -394,6 +396,75 @@ CITE_INSTRUCTION = (
     " В самом конце ответа добавь отдельной строкой «ИСТОЧНИКИ: P1, QA2» — "
     "метки только тех фрагментов контекста, которые ты реально использовал "
     "в ответе. Если ни одного — напиши «ИСТОЧНИКИ: —»."
+)
+
+# Практики: вопрос требует подробной инструкции и карточек method.
+PRACTICE_RE = re.compile(
+    r"(практик|упражнен|техник|как\s+(делать|выполнять|правильно)|"
+    r"куда\s+вести\s+внимание|шаг|ходьб|дыхан|зикр|покаян|стирани|"
+    r"тропинк|латаиф|больш\w*\s+крест|довдох|ладони?)", re.I)
+EXTERNAL_RE = re.compile(
+    r"(юнг|абрамов|хаббард|троб|внешн\w*\s+источник)", re.I)
+
+# Точечные boosts под конкретные практики/темы (source_id -> +rank).
+SOURCE_BOOSTS = [
+    (r"тих\w*\s+зикр|зикр\w*[-\s]*и?\s*хафи",
+     {"practice_card:03_tihij_zikr": 0.15}),
+    (r"больш\w*\s+крест",
+     {"practice:Зикр_3": 0.25,
+      "practice_card:59_svyashchennyy_sufiyskiy_krest": 0.05}),
+    (r"священн\w*\s+суфийск\w*\s+крест",
+     {"practice_card:59_svyashchennyy_sufiyskiy_krest": 0.25}),
+    (r"неполн\w*\s+вдох|довдох", {"practice:Зикр_2": 0.25}),
+    (r"три\s+точк|сексуальн", {"practice:Зикр_4": 0.25}),
+    (r"полн\w*\s+выдох|прочист\w*\s+позвоночник",
+     {"practice:Зикр_номер_5": 0.25}),
+    (r"пробить\s+все\s+точк", {"practice:Зикр_1": 0.25}),
+    (r"тропинк", {"practice_card:04_tropinki_zikra": 0.2}),
+    (r"ладон", {"2026-09-20": 0.15, "2026-10-18": 0.1}),
+    (r"на\s+ходу", {"2026-03-15": 0.15,
+                   "practice_card:03_tihij_zikr": 0.05}),
+    (r"имена?\s+господ|я\s+сабур",
+     {"practice_card:60_imena_gospoda": 0.2, "2026-06-14": 0.1}),
+    (r"громк\w*\s+зикр",
+     {"practice_card:03_tihij_zikr": 0.1, "2024-10-20": 0.1}),
+]
+
+PRACTICE_INSTRUCTION = (
+    "Это вопрос о практике. Дай подробную инструкцию: подготовка, "
+    "последовательность шагов, куда вести внимание, дыхание, нечётность, "
+    "типичные ошибки. Если спрашивают о вариантах или видах — перечисли "
+    "все формы, которые есть в контексте, даже если их больше трёх. "
+    "В первую очередь используй карточки практик и "
+    "аудиопрактики (source_type=method). Если в контексте есть похожие "
+    "практики (например, «Большой крест» и «Священный Суфийский Крест»), "
+    "явно различи их и не называй одним и тем же. Не добавляй деталей, "
+    "которых нет в контексте."
+)
+
+NEGATIVE_GUARD = (
+    " Если вопрос содержит тему, которой нет в контексте, не заменяй её "
+    "похожей историей или соседним сюжетом: скажи, что об этом в записях "
+    "не говорилось."
+)
+
+VARIANT_RE = re.compile(
+    r"(вариант|виды|формы).*зикр|зикр.*(вариант|виды|формы)", re.I)
+VARIANT_CONTEXT = (
+    "Известные формы зикра в корпусе: тихий (хафи) — базовая; громкий "
+    "(Мевлеви, коллективный); Зикр 1 «пробить все точки»; Зикр 2 "
+    "«неполные вдохи/довдохи»; Зикр 3 «Большой крест» (попеременное "
+    "дыхание ноздрями); Зикр 4 «три точки сексуальности»; Зикр 5 "
+    "«полный выдох/прочистка позвоночника»; тропинки зикра (16 дорожек); "
+    "зикр с ладонями; зикр на ходу. Если спрашивают о вариантах — "
+    "перечисли их."
+)
+BIG_CROSS_NOTE = (
+    "Различай: «Большой крест» из аудио-зикра (Зикр 3) — попеременное "
+    "дыхание ноздрями, точки под левым/правым соском, затем вдох через "
+    "обе ноздри и темечко. «Священный Суфийский Крест» (карточка №59) — "
+    "более продвинутый комплекс: три канала позвоночника и шесть точек "
+    "груди. Это не одно и то же описание."
 )
 
 _SRC_RE = re.compile(r"ИСТОЧНИКИ\s*:\s*([^\n]+)")
@@ -425,14 +496,32 @@ def _excerpt(h: dict, limit: int = 120) -> str:
     return s if len(s) <= limit else s[:limit].rsplit(" ", 1)[0] + "…"
 
 
-def _collect_citations(ctx: dict, used: set | None) -> list:
+def _citation_dict(h: dict) -> dict:
+    sec = h.get("timestamp_sec") or h.get("start_sec")
+    sec = int(float(sec)) if sec else None
+    date = h.get("sohbet_date", "?")
+    return {
+        "sohbet_date": date,
+        "time": _fmt_ts(sec),
+        "sec": sec,
+        "score": h["score"],
+        "excerpt": _excerpt(h),
+        "url": source_url(date, sec),
+        "source_type": h.get("source_type"),
+        "title": h.get("title"),
+    }
+
+
+def _collect_citations(ctx: dict, used: set | None, max_par: int = 6,
+                       max_qa: int = 4, force_method: bool = False) -> list:
     """Собирает цитаты. Если LLM пометил использованные фрагменты — только
     они; иначе fallback: топ-фрагменты со score >= CITE_MIN_SCORE.
-    Ближние по времени цитаты одного сохбета (<= 120 с) сливаются."""
+    Ближние по времени цитаты одного сохбета (<= 120 с) сливаются.
+    force_method — для практик всегда показываем верхнюю карточку method."""
     label_map = {}
-    for i, qa in enumerate(ctx["qa"][:4], 1):
+    for i, qa in enumerate(ctx["qa"][:max_qa], 1):
         label_map[f"QA{i}"] = qa
-    for i, p in enumerate(ctx["paragraphs"][:6], 1):
+    for i, p in enumerate(ctx["paragraphs"][:max_par], 1):
         label_map[f"P{i}"] = p
 
     if used is not None:
@@ -440,32 +529,43 @@ def _collect_citations(ctx: dict, used: set | None) -> list:
         hits = sorted((label_map[l] for l in used if l in label_map),
                       key=lambda h: -h["score"])
     else:
-        hits = [h for h in ctx["qa"][:4] + ctx["paragraphs"][:4]
+        hits = [h for h in ctx["qa"][:max_qa] + ctx["paragraphs"][:max_par]
                 if h["score"] >= CITE_MIN_SCORE]
 
     citations = []
     for h in hits:
-        sec = h.get("timestamp_sec") or h.get("start_sec")
-        sec = int(float(sec)) if sec else None
-        date = h.get("sohbet_date", "?")
-        # слияние: тот же сохбет, разница <= 120 с
-        for c in citations:
-            if (c["sohbet_date"] == date
-                    and (c["sec"] is None or sec is None
-                         or abs(c["sec"] - sec) <= 120)):
+        c = _citation_dict(h)
+        for existing in citations:
+            if (existing["sohbet_date"] == c["sohbet_date"]
+                    and (existing["sec"] is None or c["sec"] is None
+                         or abs(existing["sec"] - c["sec"]) <= 120)):
                 break
         else:
-            citations.append({
-                "sohbet_date": date,
-                "time": _fmt_ts(sec),
-                "sec": sec,
-                "score": h["score"],
-                "excerpt": _excerpt(h),
-                "url": source_url(date, sec),
-                "source_type": h.get("source_type"),
-                "title": h.get("title"),
-            })
+            citations.append(c)
+
+    if force_method:
+        methods = [h for h in ctx["paragraphs"][:max_par]
+                   if h.get("source_type") == "method"]
+        if methods:
+            top = max(methods, key=lambda h: h.get("rank", h["score"]))
+            c = _citation_dict(top)
+            if not any(x["sohbet_date"] == c["sohbet_date"]
+                       for x in citations):
+                citations.insert(0, c)
     return citations
+
+
+def apply_boosts(question: str, ctx: dict) -> None:
+    """Небольшие boosts под конкретные практики/темы + пересортировка."""
+    for h in ctx["paragraphs"] + ctx["qa"]:
+        for pat, boosts in SOURCE_BOOSTS:
+            if re.search(pat, question, re.I):
+                sid = h.get("sohbet_date")
+                if sid in boosts:
+                    h["rank"] = round(h.get("rank", h["score"])
+                                      + boosts[sid], 4)
+    ctx["paragraphs"].sort(key=lambda h: -h.get("rank", h["score"]))
+    ctx["qa"].sort(key=lambda h: -h.get("rank", h["score"]))
 
 
 def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
@@ -498,12 +598,23 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     stage("load" if _embedder is None or _store is None else "start")
     if use_hyde:
         stage("hyde")
-    ctx = retrieve(question, use_hyde=use_hyde)
+    practice = bool(PRACTICE_RE.search(question)) and not EXTERNAL_RE.search(question)
+    ctx = retrieve(question,
+                   k_par=12 if practice else 8,
+                   k_qa=4 if practice else 6,
+                   use_hyde=use_hyde)
+    if practice:
+        apply_boosts(question, ctx)
     stage("search")
     best = ctx.get("best_cos") or max(
         [h["score"] for h in ctx["paragraphs"] + ctx["qa"]], default=0)
     best_rank = ctx.get("best_rank") or 0.0
-    log.info("best_cos=%.4f best_rank=%.4f", best, best_rank)
+    if practice:
+        best_rank = max((h.get("rank", h["score"])
+                         for h in ctx["paragraphs"] + ctx["qa"]),
+                        default=best_rank)
+    log.info("practice=%s best_cos=%.4f best_rank=%.4f",
+             practice, best, best_rank)
 
     if cancelled():
         return cancelled_result(best, ctx.get("hyde"))
@@ -520,7 +631,16 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                 "best_score": best, "elapsed_sec": round(time.time() - t0, 1),
                 "model": None, "hyde": ctx["hyde"]}
 
-    context_block = build_context_block(ctx)
+    max_par = 10 if practice else 6
+    max_qa = 4
+    context_block = build_context_block(ctx, max_par=max_par, max_qa=max_qa)
+    extras = []
+    if VARIANT_RE.search(question):
+        extras.append("СПРАВКА ПО ФОРМАМ ЗИКРА:\n" + VARIANT_CONTEXT)
+    if re.search(r"больш\w*\s+крест", question, re.I):
+        extras.append("СПРАВКА ПО БОЛЬШОМУ КРЕСТУ:\n" + BIG_CROSS_NOTE)
+    if extras:
+        context_block = "\n\n".join(extras) + "\n\n" + context_block
     if mode == "publication":
         system = SYSTEM_PUBLICATION
         prompt = (f"Вопрос читателя: {question}\n\n"
@@ -532,16 +652,24 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                   f"Мои прошлые слова (контекст):\n{context_block}\n\n"
                   "Мой ответ (2-6 предложений, по сути, в моём стиле):"
                   + CITE_INSTRUCTION)
+    prompt += "\n\n" + NEGATIVE_GUARD
+    if practice:
+        prompt += "\n\n" + PRACTICE_INSTRUCTION
+        prompt += (" Если в контексте есть блок «СПРАВКА», используй его "
+                   "как приоритетное описание и перечисли все формы, "
+                   "которые в нём названы.")
 
     stage("llm")
     if cancelled():
         return cancelled_result(best, ctx.get("hyde"))
-    text = call_llm(prompt, system=system, max_tokens=2500)
+    text = call_llm(prompt, system=system,
+                    max_tokens=3000 if practice else 2500)
     if cancelled():
         return cancelled_result(best, ctx.get("hyde"))
     text, used = _parse_used_sources(text)
 
-    citations = _collect_citations(ctx, used)
+    citations = _collect_citations(ctx, used, max_par=max_par, max_qa=max_qa,
+                                   force_method=practice)
     return {"answer": text, "citations": citations, "mode": mode,
             "best_score": best, "elapsed_sec": round(time.time() - t0, 1),
             "model": GEN_MODEL, "hyde": ctx["hyde"]}
