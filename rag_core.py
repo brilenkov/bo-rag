@@ -405,6 +405,7 @@ PRACTICE_RE = re.compile(
     r"тропинк|латаиф|больш\w*\s+крест|довдох|ладони?)", re.I)
 EXTERNAL_RE = re.compile(
     r"(юнг|абрамов|хаббард|троб|внешн\w*\s+источник)", re.I)
+EXTERNAL_Q_RE = re.compile(r"(юнг|абрамов|хаббард|троб)", re.I)
 
 # Точечные boosts под конкретные практики/темы (source_id -> +rank).
 SOURCE_BOOSTS = [
@@ -460,7 +461,7 @@ VARIANT_CONTEXT = (
     "дыхание ноздрями); Зикр 4 «три точки сексуальности»; Зикр 5 "
     "«полный выдох/прочистка позвоночника»; тропинки зикра (16 дорожек); "
     "зикр с ладонями; зикр на ходу. Если спрашивают о вариантах — "
-    "перечисли их."
+    "перечисли их все, не ограничивайся тихим и громким."
 )
 BIG_CROSS_NOTE = (
     "Различай: «Большой крест» из аудио-зикра (Зикр 3) — попеременное "
@@ -600,6 +601,17 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     t0 = time.time()
     if cancelled():
         return cancelled_result()
+    # Внешние авторы по умолчанию отключены: не выдаём их мнение за БО.
+    if (EXTERNAL_Q_RE.search(question)
+            and re.search(r"что\s+(говорит|думает|считает)", question, re.I)
+            and not re.search(r"(бо|борис|гунченко|сохбет)", question, re.I)):
+        text = ("Внешние источники (Юнг, Абрамова, Хаббард, Троб) в этой "
+                "базе отключены по умолчанию. Я отвечаю по сохбетам БО; "
+                "о том, что внешний автор говорил об этом, в записях БО "
+                "не говорилось. Спроси, что Борис Олегович говорил об этом.")
+        return {"answer": text, "citations": [], "mode": mode,
+                "best_score": 0.0, "elapsed_sec": round(time.time() - t0, 1),
+                "model": None, "hyde": None}
     stage("load" if _embedder is None or _store is None else "start")
     if use_hyde:
         stage("hyde")
@@ -663,6 +675,8 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
         prompt += (" Если в контексте есть блок «СПРАВКА», используй его "
                    "как приоритетное описание и перечисли все формы, "
                    "которые в нём названы.")
+    if VARIANT_RE.search(question):
+        system += "\n\n" + VARIANT_CONTEXT
 
     stage("llm")
     if cancelled():
@@ -675,6 +689,22 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
 
     citations = _collect_citations(ctx, used, max_par=max_par, max_qa=max_qa,
                                    force_method=practice)
+    if VARIANT_RE.search(question):
+        forms = ("Зикр 1", "Зикр 2", "Зикр 3", "Зикр 4", "Зикр 5",
+                 "тропинк", "ладон", "на ходу")
+        if sum(1 for f in forms if f.lower() in text.lower()) < 4:
+            text += ("\n\nФормы зикра в корпусе: тихий (хафи), громкий "
+                     "(Мевлеви), Зикр 1 «пробить все точки», Зикр 2 "
+                     "«неполные вдохи/довдохи», Зикр 3 «Большой крест», "
+                     "Зикр 4 «три точки сексуальности», Зикр 5 «полный "
+                     "выдох», тропинки зикра (16 дорожек), зикр с ладонями, "
+                     "зикр на ходу.")
+        cat = next((h for h in ctx["paragraphs"]
+                    if h.get("sohbet_date")
+                    == "practice_card:03a_varianty_zikra"), None)
+        if cat and not any(c["sohbet_date"] == cat["sohbet_date"]
+                           for c in citations):
+            citations.insert(0, _citation_dict(cat))
     return {"answer": text, "citations": citations, "mode": mode,
             "best_score": best, "elapsed_sec": round(time.time() - t0, 1),
             "model": GEN_MODEL, "hyde": ctx["hyde"]}
