@@ -326,7 +326,8 @@
       const label = isPractice
         ? esc(c.title)
         : 'сохбет ' + esc(c.sohbet_date) + (c.time ? ', ' + esc(c.time) : '');
-      const head = c.url
+      const isGroupLink = c.url && /^https:\/\/t\.me\/c\//.test(c.url);
+      const head = c.url && !isGroupLink
         ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">' + label + '</a>'
         : label;
       const tgPlay = /^\d{4}-\d{2}-\d{2}$/.test(c.sohbet_date) && c.sec != null
