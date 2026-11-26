@@ -1066,6 +1066,9 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     if cancelled():
         return cancelled_result(best, ctx.get("hyde"))
     text, used = _parse_used_sources(text)
+    text = text.replace("\u00ad", "")
+    for bad in ("сочбет", "собет"):
+        text = text.replace(bad, "сохбет")
 
     citations = _collect_citations(ctx, used, max_par=max_par, max_qa=max_qa,
                                    force_method=practice)
