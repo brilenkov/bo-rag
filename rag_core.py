@@ -220,7 +220,9 @@ class FlatStore:
         V = self.tables[tag]
         sims = V @ vec
         allowed = self.allowed(tag, scopes)
-        if allowed is not None and allowed.any():
+        if allowed is not None and not allowed.any():
+            return [], 0.0
+        if allowed is not None:
             best_cos = float(sims[allowed].max())
         else:
             best_cos = float(sims.max()) if len(sims) else 0.0
@@ -235,7 +237,7 @@ class FlatStore:
                              + (1 - LEX_WEIGHT) * ls / mx)
             except Exception as e:
                 log.warning("lex search failed: %s", e)
-        if allowed is not None and allowed.any():
+        if allowed is not None:
             if fused is sims:
                 fused = sims.copy()
             else:
@@ -585,6 +587,23 @@ PRACTICE_ENSURE = [
     (r"новичк",
      "practice:Новичкам_и_не_только_-_1-й_шаг_Практика_управления_вниманием"),
 ]
+LITERATURE_ENSURE = [
+    (r"ильин", "ref_работа_со_страхом_ЕП_Ильин_психология_страха"),
+    (r"абрамов",
+     "ref_возрастная_механика_человека_Абрамова._Возрастная_психология"),
+    (r"юнг",
+     "ref_возрастная_механика_человека_Юнг_Карл._Человек_и_его_символы_-_royallib.ru"),
+    (r"хаббард",
+     "ref_Тренинги_Тренинг_по_вытиранию_опыта_прошлой_боли_Дианетика_-_наука_выживания"),
+    (r"троб",
+     "ref_работа_со_страхом_troub_tomas_licom_k_licu_so_strahom_putevoditel_na_puti_k_blizosti"),
+]
+THEORY_ENSURE = [
+    (r"совест", "theory:01_sexual"),
+    (r"70\s*/\s*30", "theory:01_sexual"),
+    (r"лун", "theory:01_sexual"),
+    (r"цикл", "theory:01_sexual"),
+]
 CENTERS_RE = re.compile(r"центр", re.I)
 CENTERS_CONTEXT = (
     "В записях центры образуют три тела опыта: животное, социальное и "
@@ -607,6 +626,11 @@ CENTERS_CONTEXT = (
     "разных беседах разный."
 )
 
+CENTERS_COMPLETENESS = (
+    "Вопрос о центрах. По возможности покрой несколько аспектов: что это, "
+    "где находится, стихия/потребность, как связан с другими центрами, "
+    "что даёт или блокирует. Не ограничивайся одним определением."
+)
 THEORY_NOTES = [
     (r"70\s*[/\s]\s*30",
      "70/30: у мужчин 70% сексуальной энергии трансформируется в "
@@ -792,6 +816,84 @@ def ensure_practice_source(question: str, ctx: dict) -> bool:
     return False
 
 
+def _pick_relevant(rows, question: str, n: int = 3):
+    """Выбирает из источника абзацы, пересекающиеся с вопросом."""
+    terms = {t for t in re.findall(r"[а-яa-z0-9]{4,}", question.lower())}
+    if re.search(r"определ|что\s+такое|понимает", question, re.I):
+        terms |= {"эмоциональное", "состояние", "защитная",
+                  "биологическая", "опасность", "определение"}
+    if not terms:
+        return sorted(rows, key=lambda r: r.get("paragraph_idx", 0))[:n]
+    def score(r):
+        low = (r.get("text") or "").lower()
+        return sum(1 for t in terms if t in low)
+    rows = sorted(rows, key=lambda r: (-score(r),
+                                       r.get("paragraph_idx", 0)))
+    return rows[:n]
+
+
+def ensure_theory_source(question: str, ctx: dict) -> bool:
+    """Для ключевых тем гарантированно подкладывает карту теории."""
+    for pat, sid in THEORY_ENSURE:
+        if not re.search(pat, question, re.I):
+            continue
+        try:
+            rows = get_store().by_source("par", sid)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        have = {(h.get("sohbet_date"), h.get("paragraph_idx"))
+                for h in ctx["paragraphs"]}
+        rows = [r for r in rows
+                if (r.get("sohbet_date"), r.get("paragraph_idx")) not in have]
+        for r in _pick_relevant(rows, question, 3):
+            r["score"] = 0.95
+            r["rank"] = 0.95
+            ctx["paragraphs"].insert(0, r)
+        return True
+    return False
+
+
+def ensure_literature_source(question: str, ctx: dict) -> bool:
+    """Для литературы гарантированно добавляет книгу нужного автора."""
+    for pat, sid in LITERATURE_ENSURE:
+        if not re.search(pat, question, re.I):
+            continue
+        try:
+            rows = get_store().by_source("par", sid)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        have = {(h.get("sohbet_date"), h.get("paragraph_idx"))
+                for h in ctx["paragraphs"]}
+        rows = [r for r in rows
+                if (r.get("sohbet_date"), r.get("paragraph_idx")) not in have]
+        for r in _pick_relevant(rows, question, 3):
+            r["score"] = 0.95
+            r["rank"] = 0.95
+            ctx["paragraphs"].insert(0, r)
+        return True
+    return False
+
+
+AUTHOR_NAMES = {
+    "юнг": "Юнг", "левин": "Левин", "абрамов": "Абрамова",
+    "хаббард": "Хаббард", "троб": "Троб", "ильин": "Ильин",
+    "фрейд": "Фрейд", "гурджиев": "Гурджиев", "маслоу": "Маслоу",
+    "райх": "Райх",
+}
+
+
+def _named_author(question: str):
+    low = (question or "").lower()
+    for key, label in AUTHOR_NAMES.items():
+        if key in low:
+            return label
+    return None
+
+
 def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
            progress=None, cancel=None, scopes=None) -> dict:
     """Полный цикл: поиск → генерация → ответ с цитатами.
@@ -852,6 +954,10 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     ensure_named_practice(question, ctx)
     if ensure_practice_source(question, ctx):
         practice = True
+    if "literature" in scopes:
+        ensure_literature_source(question, ctx)
+    if "theory" in scopes:
+        ensure_theory_source(question, ctx)
     stage("search")
     best = ctx.get("best_cos") or max(
         [h["score"] for h in ctx["paragraphs"] + ctx["qa"]], default=0)
@@ -881,16 +987,18 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     max_par = 10 if practice else 6
     max_qa = 4
     context_block = build_context_block(ctx, max_par=max_par, max_qa=max_qa)
+    lit_only = tuple(sorted(scopes)) == ("literature",)
     extras = []
     if VARIANT_RE.search(question):
         extras.append("СПРАВКА ПО ФОРМАМ ЗИКРА:\n" + VARIANT_CONTEXT)
     if re.search(r"больш\w*\s+крест", question, re.I):
         extras.append("СПРАВКА ПО БОЛЬШОМУ КРЕСТУ:\n" + BIG_CROSS_NOTE)
-    if centers:
+    if centers and not lit_only:
         extras.append("СПРАВКА ПО ЦЕНТРАМ:\n" + CENTERS_CONTEXT)
-    for pat, note in THEORY_NOTES:
-        if re.search(pat, question, re.I):
-            extras.append("СПРАВКА ПО ТЕОРИИ:\n" + note)
+    if not lit_only:
+        for pat, note in THEORY_NOTES:
+            if re.search(pat, question, re.I):
+                extras.append("СПРАВКА ПО ТЕОРИИ:\n" + note)
     if extras:
         context_block = "\n\n".join(extras) + "\n\n" + context_block
     if mode == "publication":
@@ -914,16 +1022,24 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                    "автора и не говори от первого лица от имени БО.")
         if (EXTERNAL_Q_RE.search(question)
                 or tuple(sorted(scopes)) == ("literature",)):
-            system = ("Ты — исследовательский помощник. Отвечай по внешним "
-                      "источникам, всегда называй автора. Не говори от имени "
-                      "Бориса Олеговича. Если в контексте есть и БО, сравни "
-                      "отдельно и обозначь, где чья мысль.")
+            system = ("Ты — исследовательский помощник. Отвечай по-русски, "
+                      "только по внешним источникам, всегда называй автора. "
+                      "Не говори от имени Бориса Олеговича. Если в контексте "
+                      "нет ответа, честно скажи, что в этих источниках этого "
+                      "нет, и не заменяй ответ общими знаниями. Если в "
+                      "контексте есть и БО, сравни отдельно и обозначь, где "
+                      "чья мысль.")
     prompt += "\n\n" + NEGATIVE_GUARD
+    if "literature" in scopes:
+        prompt += ("\n\nЕсли вопрос просит определение или конкретный факт, "
+                   "приведи его по источнику, а не только общие слова.")
     if practice:
         prompt += "\n\n" + PRACTICE_INSTRUCTION
         prompt += (" Если в контексте есть блок «СПРАВКА», используй его "
                    "как приоритетное описание и перечисли все формы, "
                    "которые в нём названы.")
+    if centers and not lit_only:
+        prompt += "\n\n" + CENTERS_COMPLETENESS
     if VARIANT_RE.search(question):
         system += "\n\n" + VARIANT_CONTEXT
 
@@ -938,6 +1054,17 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
 
     citations = _collect_citations(ctx, used, max_par=max_par, max_qa=max_qa,
                                    force_method=practice)
+    if "literature" in scopes and EXTERNAL_Q_RE.search(question):
+        named = _named_author(question)
+        if named:
+            hay = " ".join(
+                f"{c.get('author') or ''} {c.get('title') or ''}"
+                for c in citations).lower()
+            if named.lower() not in hay:
+                text = (f"В доступных источниках нет текста {named}. "
+                        "Не могу приписывать ему этот ответ; "
+                        "включи другие источники или уточни вопрос.")
+                citations = []
     if VARIANT_RE.search(question):
         forms = ("Зикр 1", "Зикр 2", "Зикр 3", "Зикр 4", "Зикр 5",
                  "тропинк", "ладон", "на ходу")
