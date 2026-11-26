@@ -668,8 +668,8 @@ def set_audio_caption_link(chat_id: int, message_id: int, sec: int) -> bool:
 
 
 def send_top_source_audio(chat_id: int, res: dict) -> None:
-    """Одно сообщение: скопированное аудио + reply-ссылка на него.
-    Ссылка ведёт на копию в этом чате, а не в группу-источник."""
+    """Одно сообщение: скопированное аудио с подписью-таймкодом.
+    Никаких вторых reply-сообщений со ссылками на группу."""
     if not SOURCE_CHAT_ID:
         return
     for c in res.get("citations", []):
@@ -677,16 +677,10 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
         if mid:
             try:
                 title = c.get("title") or "Практика"
-                copied = tg("copyMessage", chat_id=chat_id,
-                            from_chat_id=int(SOURCE_CHAT_ID),
-                            message_id=int(mid),
-                            caption=f"▶️ {title}")
-                url = chat_message_url(chat_id, copied["message_id"], 0)
-                tg("sendMessage", chat_id=chat_id,
-                   text=f'▶️ <a href="{url}">Слушайте практику</a>',
-                   parse_mode="HTML",
-                   reply_to_message_id=copied["message_id"],
-                   allow_sending_without_reply=True)
+                tg("copyMessage", chat_id=chat_id,
+                   from_chat_id=int(SOURCE_CHAT_ID),
+                   message_id=int(mid),
+                   caption=f"▶️ {title}")
             except Exception as e:
                 log.warning("practice audio copy failed mid=%s: %s", mid, e)
             return
@@ -695,16 +689,10 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
             continue
         msg_id, sec = ref
         ts = fmt_ts(sec)
-        copied = tg("copyMessage", chat_id=chat_id,
-                    from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
-                    caption=(f"▶️ Основной источник: сохбет "
-                             f"{c['sohbet_date']}, слушайте с {ts}"))
-        url = chat_message_url(chat_id, copied["message_id"], sec)
-        tg("sendMessage", chat_id=chat_id,
-           text=f'▶️ <a href="{url}">Слушайте с {ts}</a>',
-           parse_mode="HTML",
-           reply_to_message_id=copied["message_id"],
-           allow_sending_without_reply=True)
+        tg("copyMessage", chat_id=chat_id,
+           from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
+           caption=(f"▶️ Основной источник: сохбет "
+                    f"{c['sohbet_date']}, слушайте с {ts}"))
         return
 
 
@@ -722,8 +710,17 @@ def handle_play_practice(chat_id: int, payload: str) -> None:
     if not rec:
         send_message(chat_id, f"Не нашёл аудио практики для сообщения {mid}.")
         return
+    title = "Практика"
+    try:
+        from rag_core import practice_ref
+        p = practice_ref(sid) if sid else None
+        if p and p.get("title"):
+            title = p["title"]
+    except Exception:
+        pass
     tg("copyMessage", chat_id=chat_id,
-       from_chat_id=int(SOURCE_CHAT_ID), message_id=mid)
+       from_chat_id=int(SOURCE_CHAT_ID), message_id=mid,
+       caption=f"▶️ {title}")
 
 
 def handle_play(chat_id: int, payload: str) -> None:
@@ -747,16 +744,10 @@ def handle_play(chat_id: int, payload: str) -> None:
         return
     msg_id, offset = ref
     ts = fmt_ts(offset)
-    copied = tg("copyMessage", chat_id=chat_id,
-                from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
-                caption=(f"▶️ Основной источник: сохбет {date}, "
-                         f"слушайте с {ts}"))
-    url = chat_message_url(chat_id, copied["message_id"], offset)
-    tg("sendMessage", chat_id=chat_id,
-       text=f'▶️ <a href="{url}">Слушайте с {ts}</a>',
-       parse_mode="HTML",
-       reply_to_message_id=copied["message_id"],
-       allow_sending_without_reply=True)
+    tg("copyMessage", chat_id=chat_id,
+       from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
+       caption=(f"▶️ Основной источник: сохбет {date}, "
+                f"слушайте с {ts}"))
 
 
 def handle_srctest(chat_id: int, text: str) -> None:
