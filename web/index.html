@@ -79,6 +79,8 @@
   .cite a:hover { color: #cfe1ff; }
   .tgplay { margin-left: 7px; font-size: 12px; white-space: nowrap; }
   .cite audio.cite-audio { display: block; width: 100%; height: 34px; margin-top: 6px; }
+  .cite-group { margin-top: 10px; }
+  .cite-group-title { font-size: 11.5px; color: var(--accent-2); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em; }
   .cite-part { margin-top: 4px; }
   .cite-part > span { font-size: 11px; color: var(--muted); }
   .noaudio { font-size: 11px; color: var(--muted); opacity: .75; }
@@ -176,6 +178,9 @@
         <label class="toggle"><input type="checkbox" class="scope" value="literature"> литература</label>
       </div>
       <div class="row voice-row">
+        <span class="tiny" id="modeNote"></span>
+      </div>
+      <div class="row voice-row">
         <label class="tiny" for="voice">Голос</label>
         <select class="select" id="voice" title="Голос озвучки">
           <option value="male">Мужской</option>
@@ -210,6 +215,7 @@
   const testVoiceBtn = document.getElementById('testVoice');
   const statusEl = document.getElementById('status');
   const leftEl = document.getElementById('left');
+  const modeNote = document.getElementById('modeNote');
   let busy = false;
   let speaking = false;
   let requestSeq = 0;
@@ -231,6 +237,15 @@
     }
     localStorage.setItem('bo_scopes', JSON.stringify(selectedScopes()));
   }
+  function guardScopes() {
+    const sc = selectedScopes();
+    const needs = sc.includes('theory') || sc.includes('literature');
+    if (needs) modeSel.value = 'publication';
+    modeSel.disabled = needs;
+    modeNote.textContent = needs
+      ? 'Для теории/литературы включён режим «для публикации».'
+      : '';
+  }
   (function restoreScopes() {
     try {
       const saved = JSON.parse(localStorage.getItem('bo_scopes') || 'null');
@@ -238,7 +253,11 @@
         scopeBoxes.forEach(x => { x.checked = saved.includes(x.value); });
       }
     } catch (e) {}
-    scopeBoxes.forEach(x => x.addEventListener('change', saveScopes));
+    scopeBoxes.forEach(x => x.addEventListener('change', function () {
+      saveScopes();
+      guardScopes();
+    }));
+    guardScopes();
   })();
 
   function refreshStop() {
@@ -351,8 +370,7 @@
   }
   function citationsHtml(cites) {
     if (!cites || !cites.length) return '';
-    let h = '<span class="cite-label">Источники</span><div class="cites">';
-    for (const c of cites) {
+    function renderCite(c) {
       const isPractice = c.source_type === 'method' && c.title;
       const isDoc = c.source_type === 'theory' || c.source_type === 'reference';
       const isSohbet = /^\d{4}-\d{2}-\d{2}$/.test(c.sohbet_date) && c.sec != null;
@@ -398,10 +416,25 @@
         if (accessCode) src += (src.includes('?') ? '&' : '?') + 'code=' + encodeURIComponent(accessCode);
         player = '<audio class="cite-audio" controls preload="none" src="' + esc(src) + '"></audio>';
       }
-      h += '<div class="cite">' + head + tgPlay + noAudio + player
+      return '<div class="cite">' + head + tgPlay + noAudio + player
         + (c.excerpt ? ' — ' + esc(c.excerpt) : '') + '</div>';
     }
-    return h + '</div>';
+    const groupOf = c => c.source_type === 'reference' ? 'literature'
+      : (c.source_type === 'theory' ? 'theory' : 'sohbets');
+    const names = { sohbets: 'Сохбеты и практики', theory: 'Теория', literature: 'Литература' };
+    const buckets = { sohbets: [], theory: [], literature: [] };
+    cites.forEach(c => buckets[groupOf(c)].push(c));
+    const nonEmpty = Object.keys(buckets).filter(k => buckets[k].length);
+    let h = '<span class="cite-label">Источники</span>';
+    if (nonEmpty.length <= 1) {
+      return h + '<div class="cites">' + cites.map(renderCite).join('') + '</div>';
+    }
+    for (const k of ['sohbets', 'theory', 'literature']) {
+      if (!buckets[k].length) continue;
+      h += '<div class="cite-group"><div class="cite-group-title">' + names[k]
+        + '</div><div class="cites">' + buckets[k].map(renderCite).join('') + '</div></div>';
+    }
+    return h;
   }
   async function ask(question) {
     if (busy) return;
@@ -439,7 +472,8 @@
       b.innerHTML = fmt(data.answer || 'Пустой ответ.') + citationsHtml(data.citations);
       b.parentNode.insertAdjacentHTML('beforeend',
         '<div class="meta">' + (data.elapsed_sec != null ? data.elapsed_sec + ' c · ' : '')
-        + 'режим: ' + (data.mode === 'zhivoy' ? 'живой' : 'для публикации') + '</div>');
+        + 'режим: ' + (data.mode === 'zhivoy' ? 'живой' : 'для публикации')
+        + (data.mode_note ? ' · ' + esc(data.mode_note) : '') + '</div>');
       if (data.left != null) leftEl.textContent = 'осталось вопросов сегодня: ' + data.left;
       speak((data.answer || '').replace(/\*\*/g, ''));
       statusEl.textContent = 'Готов';

@@ -919,7 +919,8 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     def cancelled_result(best=0.0, hyde=None) -> dict:
         return {"answer": "", "citations": [], "mode": mode,
                 "best_score": best, "elapsed_sec": round(time.time() - t0, 1),
-                "model": None, "hyde": hyde, "cancelled": True}
+                "model": None, "hyde": hyde, "cancelled": True,
+                "mode_note": mode_note}
 
     t0 = time.time()
     if cancelled():
@@ -928,6 +929,13 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                    if s in ("sohbets", "theory", "literature"))
     if not scopes:
         scopes = ("sohbets",)
+    forced_publication = (mode == "zhivoy"
+                          and any(s in scopes for s in ("theory", "literature")))
+    if forced_publication:
+        mode = "publication"
+    mode_note = ("Для теории/литературы включён режим «для публикации»: "
+                 "нельзя говорить от первого лица от имени БО."
+                 if forced_publication else None)
     # Внешние авторы отключены, если явно не выбрана литература:
     # не выдаём их мнение за БО.
     if ("literature" not in scopes
@@ -940,7 +948,7 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                 "ответить отдельно.")
         return {"answer": text, "citations": [], "mode": mode,
                 "best_score": 0.0, "elapsed_sec": round(time.time() - t0, 1),
-                "model": None, "hyde": None}
+                "model": None, "hyde": None, "mode_note": mode_note}
     stage("load" if _embedder is None or _store is None else "start")
     if use_hyde:
         stage("hyde")
@@ -973,16 +981,18 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
         return cancelled_result(best, ctx.get("hyde"))
 
     if best < MIN_SCORE and best_rank < RANK_MIN_SCORE:
+        where = ("сохбетах" if scopes == ("sohbets",)
+                 else "выбранных источниках")
         if mode == "zhivoy":
-            text = ("Об этом я не говорил — во всяком случае, в тех сохбетах, "
-                    "что у меня записаны, этого нет. Спроси о другом, или "
-                    "дождись, когда мы разберём новые записи.")
+            text = (f"Об этом я не говорил — во всяком случае, в тех "
+                    f"{where}, что у меня записаны, этого нет. Спроси о "
+                    "другом, или дождись, когда мы разберём новые записи.")
         else:
-            text = ("По этой теме в разобранных сохбетах материала "
-                    "не найдено.")
+            text = (f"По этой теме в {where} материала не найдено.")
         return {"answer": text, "citations": [], "mode": mode,
                 "best_score": best, "elapsed_sec": round(time.time() - t0, 1),
-                "model": None, "hyde": ctx["hyde"]}
+                "model": None, "hyde": ctx["hyde"],
+                "mode_note": mode_note}
 
     max_par = 10 if practice else 6
     max_qa = 4
@@ -1033,6 +1043,11 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     if "literature" in scopes:
         prompt += ("\n\nЕсли вопрос просит определение или конкретный факт, "
                    "приведи его по источнику, а не только общие слова.")
+    if len(scopes) > 1:
+        prompt += ("\n\nИспользованы разные слои источников. Раздели ответ "
+                   "на короткие разделы: «Из сохбетов», «Из теории», "
+                   "«Из литературы» — и не смешивай их в одном абзаце. "
+                   "Если слой ничего не дал, не выдумывай его.")
     if practice:
         prompt += "\n\n" + PRACTICE_INSTRUCTION
         prompt += (" Если в контексте есть блок «СПРАВКА», используй его "
@@ -1083,4 +1098,5 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
             citations.insert(0, _citation_dict(cat))
     return {"answer": text, "citations": citations, "mode": mode,
             "best_score": best, "elapsed_sec": round(time.time() - t0, 1),
-            "model": GEN_MODEL, "hyde": ctx["hyde"]}
+            "model": GEN_MODEL, "hyde": ctx["hyde"],
+            "mode_note": mode_note}

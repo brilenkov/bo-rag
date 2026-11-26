@@ -847,9 +847,20 @@ def get_mode(user_id: int) -> str:
     return user_mode.get(user_id, "zhivoy")
 
 
+def _scope_tag(c: dict) -> str:
+    st = c.get("source_type")
+    if st == "reference":
+        return "литература"
+    if st in ("theory", "book", "lecture"):
+        return "теория"
+    return "сохбет"
+
+
 def format_answer(res: dict) -> str:
     text = res["answer"]
     if res["citations"]:
+        tags = {_scope_tag(c) for c in res["citations"]}
+        multi = len(tags) > 1
         text += "\n\n— Источники:"
         for c in res["citations"]:
             if c.get("source_type") in ("method", "theory", "reference"):
@@ -869,6 +880,8 @@ def format_answer(res: dict) -> str:
                        if mid else None)
             if url:
                 label = f'<a href="{url}">{label}</a>'
+            if multi:
+                label = f"[{_scope_tag(c)}] {label}"
             line = f"\n• {label}"
             if (c.get("source_type") not in ("method", "theory", "reference")
                     and c.get("time")):
@@ -878,6 +891,8 @@ def format_answer(res: dict) -> str:
             if c.get("excerpt"):
                 line += f" — <i>{html_escape(c['excerpt'])}</i>"
             text += line
+    if res.get("mode_note"):
+        text += ("\n\n<i>ℹ️ " + html_escape(res["mode_note"]) + "</i>")
     if DEBUG:
         text += (f"\n\n<i>debug: {res['elapsed_sec']}s, "
                  f"best={res['best_score']}, model={res['model']}</i>")
@@ -1021,6 +1036,8 @@ def handle_update(upd: dict) -> None:
                 if not cur:
                     cur = {"sohbets"}
                 user_scopes[uid] = cur
+                if cur & {"theory", "literature"}:
+                    user_mode[uid] = "publication"
                 save_settings()
             if chat_id:
                 edit_message(chat_id, mid,
@@ -1443,6 +1460,7 @@ class WebHandler(BaseHTTPRequestHandler):
                 "citations": res["citations"],
                 "mode": res["mode"],
                 "scopes": scopes,
+                "mode_note": res.get("mode_note"),
                 "best_score": res["best_score"],
                 "elapsed_sec": res["elapsed_sec"],
                 "left": left,
