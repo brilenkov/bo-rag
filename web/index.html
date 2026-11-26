@@ -81,6 +81,7 @@
   .cite audio.cite-audio { display: block; width: 100%; height: 34px; margin-top: 6px; }
   .cite-part { margin-top: 4px; }
   .cite-part > span { font-size: 11px; color: var(--muted); }
+  .noaudio { font-size: 11px; color: var(--muted); opacity: .75; }
   .meta { font-size: 11px; color: var(--muted); margin-top: 4px; padding: 0 2px; }
   footer { position: sticky; bottom: 0; background: linear-gradient(180deg, transparent, var(--bg) 30%); padding: 10px 0 18px; }
   .composer {
@@ -325,21 +326,33 @@
     let h = '<span class="cite-label">Источники</span><div class="cites">';
     for (const c of cites) {
       const isPractice = c.source_type === 'method' && c.title;
-      const label = isPractice
-        ? esc(c.title)
-        : 'сохбет ' + esc(c.sohbet_date) + (c.time ? ', ' + esc(c.time) : '');
+      const isSohbet = /^\d{4}-\d{2}-\d{2}$/.test(c.sohbet_date) && c.sec != null;
+      const playUrl = isSohbet
+        ? 'https://t.me/alexenur_bo_bot?start=play_'
+          + encodeURIComponent(c.sohbet_date) + '_' + encodeURIComponent(c.sec)
+        : (c.audio_mid
+          ? 'https://t.me/alexenur_bo_bot?start=playp_' + encodeURIComponent(c.audio_mid)
+          : '');
+      let label;
+      if (isPractice) {
+        label = esc(c.title);
+      } else {
+        label = 'сохбет ' + esc(c.sohbet_date);
+        if (c.time) {
+          label += ', ' + (playUrl
+            ? '<a class="tgplay" target="_blank" rel="noopener" href="' + playUrl + '">' + esc(c.time) + '</a>'
+            : esc(c.time));
+        }
+      }
       const isGroupLink = c.url && /^https:\/\/t\.me\/c\//.test(c.url);
       const head = c.url && !isGroupLink
         ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener">' + label + '</a>'
         : label;
-      const tgPlay = /^\d{4}-\d{2}-\d{2}$/.test(c.sohbet_date) && c.sec != null
-        ? ' <a class="tgplay" target="_blank" rel="noopener" href="https://t.me/alexenur_bo_bot?start=play_'
-          + encodeURIComponent(c.sohbet_date) + '_' + encodeURIComponent(c.sec)
-          + '">🎧 в TG</a>'
-        : (c.audio_mid
-          ? ' <a class="tgplay" target="_blank" rel="noopener" href="https://t.me/alexenur_bo_bot?start=playp_'
-            + encodeURIComponent(c.audio_mid) + '">🎧 в TG</a>'
-          : '');
+      const tgPlay = playUrl
+        ? ' <a class="tgplay" target="_blank" rel="noopener" href="' + playUrl + '">🎧 в TG</a>'
+        : '';
+      const noAudio = isPractice && !c.audio_url && !c.audio_parts
+        ? ' <span class="noaudio">текст, аудиозаписи нет</span>' : '';
       let player = '';
       if (c.audio_parts && c.audio_parts.length) {
         player = c.audio_parts.map(function (p) {
@@ -353,7 +366,7 @@
         if (accessCode) src += (src.includes('?') ? '&' : '?') + 'code=' + encodeURIComponent(accessCode);
         player = '<audio class="cite-audio" controls preload="none" src="' + esc(src) + '"></audio>';
       }
-      h += '<div class="cite">' + head + tgPlay + player
+      h += '<div class="cite">' + head + tgPlay + noAudio + player
         + (c.excerpt ? ' — ' + esc(c.excerpt) : '') + '</div>';
     }
     return h + '</div>';
