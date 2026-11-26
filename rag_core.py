@@ -912,7 +912,8 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
         system += ("\n\nВ контексте есть внешняя литература "
                    "(source_type=reference). Это не слова БО: всегда называй "
                    "автора и не говори от первого лица от имени БО.")
-        if EXTERNAL_Q_RE.search(question):
+        if (EXTERNAL_Q_RE.search(question)
+                or tuple(sorted(scopes)) == ("literature",)):
             system = ("Ты — исследовательский помощник. Отвечай по внешним "
                       "источникам, всегда называй автора. Не говори от имени "
                       "Бориса Олеговича. Если в контексте есть и БО, сравни "
