@@ -170,6 +170,12 @@
         <button class="btn primary" id="send">Отправить</button>
       </div>
       <div class="row voice-row">
+        <label class="tiny">Данные</label>
+        <label class="toggle"><input type="checkbox" class="scope" value="sohbets" checked> сохбеты</label>
+        <label class="toggle"><input type="checkbox" class="scope" value="theory"> теория</label>
+        <label class="toggle"><input type="checkbox" class="scope" value="literature"> литература</label>
+      </div>
+      <div class="row voice-row">
         <label class="tiny" for="voice">Голос</label>
         <select class="select" id="voice" title="Голос озвучки">
           <option value="male">Мужской</option>
@@ -212,6 +218,28 @@
   let currentAudio = null;
   let currentBubble = null;
   let accessCode = localStorage.getItem('bo_access') || '';
+  const scopeBoxes = Array.from(document.querySelectorAll('.scope'));
+
+  function selectedScopes() {
+    const a = scopeBoxes.filter(x => x.checked).map(x => x.value);
+    return a.length ? a : ['sohbets'];
+  }
+  function saveScopes() {
+    const a = scopeBoxes.filter(x => x.checked).map(x => x.value);
+    if (!a.length) {
+      scopeBoxes.find(x => x.value === 'sohbets').checked = true;
+    }
+    localStorage.setItem('bo_scopes', JSON.stringify(selectedScopes()));
+  }
+  (function restoreScopes() {
+    try {
+      const saved = JSON.parse(localStorage.getItem('bo_scopes') || 'null');
+      if (Array.isArray(saved) && saved.length) {
+        scopeBoxes.forEach(x => { x.checked = saved.includes(x.value); });
+      }
+    } catch (e) {}
+    scopeBoxes.forEach(x => x.addEventListener('change', saveScopes));
+  })();
 
   function refreshStop() {
     stopBtn.style.display = (busy || speaking) ? '' : 'none';
@@ -326,6 +354,7 @@
     let h = '<span class="cite-label">Источники</span><div class="cites">';
     for (const c of cites) {
       const isPractice = c.source_type === 'method' && c.title;
+      const isDoc = c.source_type === 'theory' || c.source_type === 'reference';
       const isSohbet = /^\d{4}-\d{2}-\d{2}$/.test(c.sohbet_date) && c.sec != null;
       const playUrl = isSohbet
         ? 'https://t.me/alexenur_bo_bot?start=play_'
@@ -334,8 +363,11 @@
           ? 'https://t.me/alexenur_bo_bot?start=playp_' + encodeURIComponent(c.audio_mid)
           : '');
       let label;
-      if (isPractice) {
-        label = esc(c.title);
+      if (isPractice || isDoc) {
+        label = esc(c.title || 'Источник');
+        if (c.source_type === 'reference' && c.author) {
+          label += ' — ' + esc(c.author);
+        }
       } else {
         label = 'сохбет ' + esc(c.sohbet_date);
         if (c.time) {
@@ -393,7 +425,8 @@
       const r = await fetch('/ask', {
         method: 'POST', headers,
         signal: currentController.signal,
-        body: JSON.stringify({ question: q, mode: modeSel.value })
+        body: JSON.stringify({ question: q, mode: modeSel.value,
+                               scopes: selectedScopes() })
       });
       if (r.status === 401) {
         const code = prompt('Введите код доступа:');

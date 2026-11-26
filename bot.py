@@ -40,10 +40,13 @@ TOKEN = os.environ.get("BO_BOT_TOKEN", "").strip()
 API = f"https://api.telegram.org/bot{TOKEN}"
 
 MODE_NAMES = {"zhivoy": "🎙 Живой", "publication": "📝 Для публикации"}
+SCOPE_NAMES = {"sohbets": "📚 Сохбеты", "theory": "🧠 Теория",
+               "literature": "📖 Литература"}
 user_mode: dict[int, str] = {}
 user_voice: dict[int, str] = {}
 user_speed: dict[int, float] = {}
 user_tts: dict[int, bool] = {}
+user_scopes: dict[int, set] = {}
 cancel_events: dict[int, threading.Event] = {}
 SETTINGS_PATH = BOT_DIR / "data" / "user_settings.json"
 
@@ -61,8 +64,11 @@ def load_settings() -> None:
         user_speed[int(k)] = float(v)
     for k, v in (d.get("tts") or {}).items():
         user_tts[int(k)] = bool(v)
-    log.info("settings loaded: voice=%d speed=%d tts=%d",
-             len(user_voice), len(user_speed), len(user_tts))
+    for k, v in (d.get("scopes") or {}).items():
+        user_scopes[int(k)] = {s for s in v if s in SCOPE_NAMES}
+    log.info("settings loaded: voice=%d speed=%d tts=%d scopes=%d",
+             len(user_voice), len(user_speed), len(user_tts),
+             len(user_scopes))
 
 
 def save_settings() -> None:
@@ -73,6 +79,7 @@ def save_settings() -> None:
             "voice": {str(k): v for k, v in user_voice.items()},
             "speed": {str(k): v for k, v in user_speed.items()},
             "tts": {str(k): v for k, v in user_tts.items()},
+            "scopes": {str(k): sorted(v) for k, v in user_scopes.items()},
         }, ensure_ascii=False, indent=1), encoding="utf-8")
     except Exception as e:
         log.warning("save settings failed: %s", e)
@@ -282,6 +289,17 @@ def get_tts(uid: int) -> bool:
     return bool(user_tts.get(uid, False))
 
 
+def get_scopes(uid: int) -> tuple:
+    s = user_scopes.get(uid) or {"sohbets"}
+    return tuple(sorted(s))
+
+
+def scopes_label(uid: int) -> str:
+    names = [SCOPE_NAMES[s].split(" ", 1)[1]
+             for s in get_scopes(uid) if s in SCOPE_NAMES]
+    return " + ".join(names) if names else "Сохбеты"
+
+
 def voice_label(vid: str) -> str:
     for v in YANDEX_VOICES + EDGE_VOICES:
         if v["id"] == vid:
@@ -310,6 +328,8 @@ def settings_keyboard(uid: int) -> dict:
         [{"text": ("🔊 Озвучка ответов: вкл" if tts
                    else "🔇 Озвучка ответов: выкл"),
           "callback_data": "set:tts:" + ("off" if tts else "on")}],
+        [{"text": f"📚 Данные: {scopes_label(uid)}",
+          "callback_data": "menu:data"}],
         [{"text": "▶️ Проверить голос", "callback_data": "test:voice"}],
     ]}
 
@@ -337,6 +357,16 @@ def speed_menu_keyboard(uid: int) -> dict:
         rows.append([{"text": ("✅ " if abs(cur - s) < 0.001 else "")
                       + f"{s:.2f}×", "callback_data": f"set:speed:{s}"}
                      for s in speeds[i:i + 3]])
+    rows.append([{"text": "← Назад", "callback_data": "menu:settings"}])
+    return {"inline_keyboard": rows}
+
+
+def data_menu_keyboard(uid: int) -> dict:
+    cur = set(get_scopes(uid))
+    rows = []
+    for key, label in SCOPE_NAMES.items():
+        rows.append([{"text": ("✅ " if key in cur else "▫️ ") + label,
+                      "callback_data": f"set:scope:{key}"}])
     rows.append([{"text": "← Назад", "callback_data": "menu:settings"}])
     return {"inline_keyboard": rows}
 
@@ -822,8 +852,10 @@ def format_answer(res: dict) -> str:
     if res["citations"]:
         text += "\n\n— Источники:"
         for c in res["citations"]:
-            if c.get("source_type") == "method":
-                label = c.get("title") or "Практика"
+            if c.get("source_type") in ("method", "theory", "reference"):
+                label = c.get("title") or "Источник"
+                if c.get("source_type") == "reference" and c.get("author"):
+                    label += f" — {c['author']}"
             else:
                 label = f"сохбет {c['sohbet_date']}"
             if c.get("source_type") != "method":
@@ -838,11 +870,11 @@ def format_answer(res: dict) -> str:
             if url:
                 label = f'<a href="{url}">{label}</a>'
             line = f"\n• {label}"
-            if c.get("source_type") != "method":
-                ts = c.get("time")
-                if ts:
-                    line += (f', <a href="{url}">{ts}</a>' if url
-                             else f", {ts}")
+            if (c.get("source_type") not in ("method", "theory", "reference")
+                    and c.get("time")):
+                ts = c["time"]
+                line += (f', <a href="{url}">{ts}</a>' if url
+                         else f", {ts}")
             if c.get("excerpt"):
                 line += f" — <i>{html_escape(c['excerpt'])}</i>"
             text += line
@@ -887,7 +919,8 @@ def handle_question(msg: dict) -> None:
     cancel_events[user_id] = cancel_ev
     try:
         from rag_core import answer
-        res = answer(question, mode, progress=progress, cancel=cancel_ev)
+        res = answer(question, mode, progress=progress, cancel=cancel_ev,
+                     scopes=get_scopes(user_id))
     except Exception as e:
         cancel_events.pop(user_id, None)
         log.exception("rag error")
@@ -966,6 +999,35 @@ def handle_update(upd: dict) -> None:
             if chat_id:
                 edit_message(chat_id, mid, "⚡ Выберите скорость:",
                              speed_menu_keyboard(uid))
+            ack()
+            return
+        if data == "menu:data":
+            if chat_id:
+                edit_message(chat_id, mid,
+                             "📚 Какие данные использовать?\n"
+                             "Можно включить несколько. По умолчанию — "
+                             "только сохбеты.",
+                             data_menu_keyboard(uid))
+            ack()
+            return
+        if data.startswith("set:scope:"):
+            scope = data.split(":", 2)[2]
+            if scope in SCOPE_NAMES:
+                cur = set(user_scopes.get(uid) or {"sohbets"})
+                if scope in cur:
+                    cur.discard(scope)
+                else:
+                    cur.add(scope)
+                if not cur:
+                    cur = {"sohbets"}
+                user_scopes[uid] = cur
+                save_settings()
+            if chat_id:
+                edit_message(chat_id, mid,
+                             "📚 Какие данные использовать?\n"
+                             "Можно включить несколько. По умолчанию — "
+                             "только сохбеты.",
+                             data_menu_keyboard(uid))
             ack()
             return
         if data.startswith("set:mode:"):
@@ -1355,6 +1417,11 @@ class WebHandler(BaseHTTPRequestHandler):
             mode = payload.get("mode") or "publication"
             if mode not in ("zhivoy", "publication"):
                 mode = "publication"
+            scopes = payload.get("scopes") or ["sohbets"]
+            if isinstance(scopes, str):
+                scopes = [scopes]
+            scopes = [s for s in scopes
+                      if s in ("sohbets", "theory", "literature")] or ["sohbets"]
         except Exception:
             self._send(400, json.dumps(
                 {"error": "bad request"}, ensure_ascii=False))
@@ -1370,11 +1437,12 @@ class WebHandler(BaseHTTPRequestHandler):
         log.info("WEB Q ip=%s mode=%s: %s", ip, mode, question[:90])
         try:
             from rag_core import answer
-            res = answer(question, mode)
+            res = answer(question, mode, scopes=scopes)
             body = {
                 "answer": res["answer"],
                 "citations": res["citations"],
                 "mode": res["mode"],
+                "scopes": scopes,
                 "best_score": res["best_score"],
                 "elapsed_sec": res["elapsed_sec"],
                 "left": left,

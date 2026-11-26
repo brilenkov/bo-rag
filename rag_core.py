@@ -126,27 +126,43 @@ class FlatStore:
                 np.float32, copy=False)
             V /= (np.linalg.norm(V, axis=1, keepdims=True) + 1e-12)
             self.tables[tag] = V
-        # внешние книги (Юнг, Абрамова и т.п.) — только reference, по умолчанию
-        # исключаем из выдачи: бот отвечает по материалам БО.
-        self.blocked = {}
+        # Маски источников: сохбеты / теория / литература.
+        # reference (Юнг, Левин и др.) по умолчанию выключен.
+        self.masks = {}
         for tag in ("par", "qa"):
-            mask = np.zeros(self.tables[tag].shape[0], dtype=bool)
+            n = self.tables[tag].shape[0]
+            ref = np.zeros(n, dtype=bool)
+            theory = np.zeros(n, dtype=bool)
+            own_book = np.zeros(n, dtype=bool)
+            lecture = np.zeros(n, dtype=bool)
             try:
                 rows = self.db.execute(
-                    f"SELECT id FROM {tag} WHERE "
-                    "json_extract(payload, '$.source_type') = 'reference'"
+                    f"SELECT id, json_extract(payload, '$.source_type'), "
+                    f"json_extract(payload, '$.source_quality'), "
+                    f"json_extract(payload, '$.author') FROM {tag}"
                 ).fetchall()
-            except Exception:
-                rows = self.db.execute(
-                    f"SELECT id FROM {tag} WHERE "
-                    "payload LIKE '%\"source_type\": \"reference\"%'"
-                ).fetchall()
-            for (i,) in rows:
-                if 0 <= i < mask.shape[0]:
-                    mask[i] = True
-            self.blocked[tag] = mask
-            log.info("store %s: blocked reference=%d/%d", tag,
-                     int(mask.sum()), mask.shape[0])
+                for i, st, sq, author in rows:
+                    if not (0 <= i < n):
+                        continue
+                    if st == "reference":
+                        ref[i] = True
+                    elif sq == "theory_map" or st == "theory":
+                        theory[i] = True
+                    elif st == "book":
+                        own_book[i] = True
+                    elif st == "lecture":
+                        lecture[i] = True
+            except Exception as e:
+                log.warning("scope masks %s failed: %s", tag, e)
+            self.masks[tag] = {
+                "literature": ref,
+                "theory": theory | own_book | lecture,
+                "sohbets": ~(ref | theory),
+            }
+            log.info("store %s: sohbets=%d theory=%d literature=%d",
+                     tag, int(self.masks[tag]["sohbets"].sum()),
+                     int(self.masks[tag]["theory"].sum()),
+                     int(self.masks[tag]["literature"].sum()))
         # предсобранный BM25 (lex_{tag}.npz) — без него работаем на cosine
         self._lex = {}
         for tag in ("par", "qa"):
@@ -180,15 +196,32 @@ class FlatStore:
                 "json_extract(payload, '$.sohbet_date') = ?", (source_id,))
             return [json.loads(p) for (p,) in cur.fetchall()]
 
-    def search(self, tag: str, vec, k: int, question: str = None):
+    def allowed(self, tag: str, scopes=None):
+        """Маска разрешённых источников для выбранных областей."""
+        m = self.masks.get(tag)
+        if not m:
+            return None
+        scopes = scopes or ("sohbets",)
+        acc = None
+        for s in scopes:
+            part = m.get(s)
+            if part is None:
+                continue
+            acc = part if acc is None else (acc | part)
+        if acc is None:
+            acc = m["sohbets"]
+        return acc
+
+    def search(self, tag: str, vec, k: int, question: str = None,
+               scopes=None):
         """Возвращает (hits, best_cosine). Сортировка — по гибридному score,
         в поле score остаётся чистый cosine (для цитат и порога)."""
         import numpy as np
         V = self.tables[tag]
         sims = V @ vec
-        blocked = self.blocked.get(tag)
-        if blocked is not None and blocked.any():
-            best_cos = float(sims[~blocked].max()) if (~blocked).any() else 0.0
+        allowed = self.allowed(tag, scopes)
+        if allowed is not None and allowed.any():
+            best_cos = float(sims[allowed].max())
         else:
             best_cos = float(sims.max()) if len(sims) else 0.0
         fused = sims
@@ -202,12 +235,12 @@ class FlatStore:
                              + (1 - LEX_WEIGHT) * ls / mx)
             except Exception as e:
                 log.warning("lex search failed: %s", e)
-        if blocked is not None and blocked.any():
+        if allowed is not None and allowed.any():
             if fused is sims:
                 fused = sims.copy()
             else:
                 fused = fused.copy()
-            fused[blocked] = -1e9
+            fused[~allowed] = -1e9
         k = min(k, V.shape[0])
         idx = np.argpartition(-fused, k - 1)[:k]
         idx = idx[np.argsort(-fused[idx])]
@@ -264,15 +297,15 @@ def hyde(question: str) -> str:
 
 
 def retrieve(question: str, k_par: int = 8, k_qa: int = 6,
-             use_hyde: bool = None) -> dict:
+             use_hyde: bool = None, scopes=None) -> dict:
     """Гибридный поиск (cosine + BM25). Возвращает paragraphs/qa + best_cos."""
     if use_hyde is None:
         use_hyde = HYDE_ENABLED
     store = get_store()
     search_text = hyde(question) if use_hyde else question
     vec = embed_text(search_text + "\n" + question)
-    par, best_par = store.search("par", vec, k_par, question)
-    qa, best_qa = store.search("qa", vec, k_qa, question)
+    par, best_par = store.search("par", vec, k_par, question, scopes)
+    qa, best_qa = store.search("qa", vec, k_qa, question, scopes)
     hits = par + qa
     return {
         "hyde": search_text,
@@ -443,8 +476,10 @@ PRACTICE_RE = re.compile(
     r"куда\s+вести\s+внимание|шаг|ходьб|дыхан|зикр|покаян|стирани|"
     r"тропинк|латаиф|больш\w*\s+крест|довдох|ладони?)", re.I)
 EXTERNAL_RE = re.compile(
-    r"(юнг|абрамов|хаббард|троб|внешн\w*\s+источник)", re.I)
-EXTERNAL_Q_RE = re.compile(r"(юнг|абрамов|хаббард|троб)", re.I)
+    r"(юнг|абрамов|хаббард|троб|левин|фрейд|гурджиев|маслоу|райх|"
+    r"внешн\w*\s+источник)", re.I)
+EXTERNAL_Q_RE = re.compile(
+    r"(юнг|абрамов|хаббард|троб|левин|фрейд|гурджиев|маслоу|райх)", re.I)
 
 # Точечные boosts под конкретные практики/темы (source_id -> +rank).
 SOURCE_BOOSTS = [
@@ -635,6 +670,7 @@ def _citation_dict(h: dict) -> dict:
         "url": source_url(date, sec),
         "source_type": h.get("source_type"),
         "title": h.get("title"),
+        "author": h.get("author"),
     }
     p = practice_ref(date)
     if p:
@@ -757,8 +793,11 @@ def ensure_practice_source(question: str, ctx: dict) -> bool:
 
 
 def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
-           progress=None, cancel=None) -> dict:
+           progress=None, cancel=None, scopes=None) -> dict:
     """Полный цикл: поиск → генерация → ответ с цитатами.
+
+    scopes — какие источники использовать: sohbets / theory / literature.
+    По умолчанию только sohbets.
 
     progress(stage: str) — колбэк стадий для живого статуса в боте:
     "load" (первая загрузка модели), "hyde", "search", "llm".
@@ -783,14 +822,20 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     t0 = time.time()
     if cancelled():
         return cancelled_result()
-    # Внешние авторы по умолчанию отключены: не выдаём их мнение за БО.
-    if (EXTERNAL_Q_RE.search(question)
+    scopes = tuple(s for s in (scopes or ("sohbets",))
+                   if s in ("sohbets", "theory", "literature"))
+    if not scopes:
+        scopes = ("sohbets",)
+    # Внешние авторы отключены, если явно не выбрана литература:
+    # не выдаём их мнение за БО.
+    if ("literature" not in scopes
+            and EXTERNAL_Q_RE.search(question)
             and re.search(r"что\s+(говорит|думает|считает)", question, re.I)
             and not re.search(r"(бо|борис|гунченко|сохбет)", question, re.I)):
-        text = ("Внешние источники (Юнг, Абрамова, Хаббард, Троб) в этой "
-                "базе отключены по умолчанию. Я отвечаю по сохбетам БО; "
-                "о том, что внешний автор говорил об этом, в записях БО "
-                "не говорилось. Спроси, что Борис Олегович говорил об этом.")
+        text = ("Внешние источники (Юнг, Левин, Абрамова, Хаббард, Троб) "
+                "сейчас отключены. Включи «Литература» в настройках данных, "
+                "если нужен обзор по внешним авторам. По сохбетам БО я могу "
+                "ответить отдельно.")
         return {"answer": text, "citations": [], "mode": mode,
                 "best_score": 0.0, "elapsed_sec": round(time.time() - t0, 1),
                 "model": None, "hyde": None}
@@ -802,7 +847,7 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     ctx = retrieve(question,
                    k_par=12 if (practice or centers) else 8,
                    k_qa=4 if (practice or centers) else 6,
-                   use_hyde=use_hyde)
+                   use_hyde=use_hyde, scopes=scopes)
     apply_boosts(question, ctx)
     ensure_named_practice(question, ctx)
     if ensure_practice_source(question, ctx):
@@ -851,14 +896,27 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     if mode == "publication":
         system = SYSTEM_PUBLICATION
         prompt = (f"Вопрос читателя: {question}\n\n"
-                  f"Контекст из сохбетов:\n{context_block}\n\n"
+                  f"Контекст:\n{context_block}\n\n"
                   "Текст для публикации:" + CITE_INSTRUCTION)
     else:
         system = SYSTEM_ZHIVOY
         prompt = (f"Вопрос ученика: {question}\n\n"
-                  f"Мои прошлые слова (контекст):\n{context_block}\n\n"
+                  f"Контекст:\n{context_block}\n\n"
                   "Мой ответ (2-6 предложений, по сути, в моём стиле):"
                   + CITE_INSTRUCTION)
+    if "theory" in scopes:
+        system += ("\n\nВ контексте есть карты теории центров "
+                   "(source_type=theory). Это теория Гунченко/БО; используй "
+                   "её как теорию, не выдавай за случайную цитату из сохбета.")
+    if "literature" in scopes:
+        system += ("\n\nВ контексте есть внешняя литература "
+                   "(source_type=reference). Это не слова БО: всегда называй "
+                   "автора и не говори от первого лица от имени БО.")
+        if EXTERNAL_Q_RE.search(question):
+            system = ("Ты — исследовательский помощник. Отвечай по внешним "
+                      "источникам, всегда называй автора. Не говори от имени "
+                      "Бориса Олеговича. Если в контексте есть и БО, сравни "
+                      "отдельно и обозначь, где чья мысль.")
     prompt += "\n\n" + NEGATIVE_GUARD
     if practice:
         prompt += "\n\n" + PRACTICE_INSTRUCTION
