@@ -668,15 +668,25 @@ def set_audio_caption_link(chat_id: int, message_id: int, sec: int) -> bool:
 
 
 def send_top_source_audio(chat_id: int, res: dict) -> None:
-    """Одно сообщение: скопированное аудио + кликабельный таймкод в подписи."""
+    """Одно сообщение: скопированное аудио + reply-ссылка на него.
+    Ссылка ведёт на копию в этом чате, а не в группу-источник."""
     if not SOURCE_CHAT_ID:
         return
     for c in res.get("citations", []):
         mid = c.get("audio_mid")
         if mid:
             try:
-                tg("copyMessage", chat_id=chat_id,
-                   from_chat_id=int(SOURCE_CHAT_ID), message_id=int(mid))
+                title = c.get("title") or "Практика"
+                copied = tg("copyMessage", chat_id=chat_id,
+                            from_chat_id=int(SOURCE_CHAT_ID),
+                            message_id=int(mid),
+                            caption=f"▶️ {title}")
+                url = chat_message_url(chat_id, copied["message_id"], 0)
+                tg("sendMessage", chat_id=chat_id,
+                   text=f'▶️ <a href="{url}">Слушайте практику</a>',
+                   parse_mode="HTML",
+                   reply_to_message_id=copied["message_id"],
+                   allow_sending_without_reply=True)
             except Exception as e:
                 log.warning("practice audio copy failed mid=%s: %s", mid, e)
             return
@@ -684,15 +694,17 @@ def send_top_source_audio(chat_id: int, res: dict) -> None:
         if not ref:
             continue
         msg_id, sec = ref
+        ts = fmt_ts(sec)
         copied = tg("copyMessage", chat_id=chat_id,
-                    from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id)
-        if not set_audio_caption_link(chat_id, copied["message_id"], sec):
-            url = chat_message_url(chat_id, copied["message_id"], sec)
-            tg("sendMessage", chat_id=chat_id,
-               text=f'▶️ <a href="{url}">{fmt_ts(sec)}</a>',
-               parse_mode="HTML",
-               reply_to_message_id=copied["message_id"],
-               allow_sending_without_reply=True)
+                    from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
+                    caption=(f"▶️ Основной источник: сохбет "
+                             f"{c['sohbet_date']}, слушайте с {ts}"))
+        url = chat_message_url(chat_id, copied["message_id"], sec)
+        tg("sendMessage", chat_id=chat_id,
+           text=f'▶️ <a href="{url}">Слушайте с {ts}</a>',
+           parse_mode="HTML",
+           reply_to_message_id=copied["message_id"],
+           allow_sending_without_reply=True)
         return
 
 
@@ -734,15 +746,17 @@ def handle_play(chat_id: int, payload: str) -> None:
                               "Возможно, это практика без карты сообщений.")
         return
     msg_id, offset = ref
+    ts = fmt_ts(offset)
     copied = tg("copyMessage", chat_id=chat_id,
-                from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id)
-    if not set_audio_caption_link(chat_id, copied["message_id"], offset):
-        url = chat_message_url(chat_id, copied["message_id"], offset)
-        tg("sendMessage", chat_id=chat_id,
-           text=f'▶️ <a href="{url}">{fmt_ts(sec)}</a>',
-           parse_mode="HTML",
-           reply_to_message_id=copied["message_id"],
-           allow_sending_without_reply=True)
+                from_chat_id=int(SOURCE_CHAT_ID), message_id=msg_id,
+                caption=(f"▶️ Основной источник: сохбет {date}, "
+                         f"слушайте с {ts}"))
+    url = chat_message_url(chat_id, copied["message_id"], offset)
+    tg("sendMessage", chat_id=chat_id,
+       text=f'▶️ <a href="{url}">Слушайте с {ts}</a>',
+       parse_mode="HTML",
+       reply_to_message_id=copied["message_id"],
+       allow_sending_without_reply=True)
 
 
 def handle_srctest(chat_id: int, text: str) -> None:
@@ -817,17 +831,27 @@ def format_answer(res: dict) -> str:
     if res["citations"]:
         text += "\n\n— Источники:"
         for c in res["citations"]:
-            if (c.get("source_type") == "method"
-                    and str(c.get("title", "")).startswith("Практика")):
-                label = c.get("title") or f"практика {c['sohbet_date']}"
+            if c.get("source_type") == "method":
+                label = c.get("title") or "Практика"
             else:
                 label = f"сохбет {c['sohbet_date']}"
-            url = c.get("url") or source_link(c["sohbet_date"], c.get("sec"))
+            if c.get("source_type") != "method":
+                sec = c.get("sec")
+                url = (f"https://t.me/alexenur_bo_bot?start=play_"
+                       f"{c['sohbet_date']}_{sec}"
+                       if sec is not None else None)
+            else:
+                mid = c.get("audio_mid")
+                url = (f"https://t.me/alexenur_bo_bot?start=playp_{mid}"
+                       if mid else None)
             if url:
                 label = f'<a href="{url}">{label}</a>'
             line = f"\n• {label}"
             if c.get("source_type") != "method":
-                line += f", {c['time']}"
+                ts = c.get("time")
+                if ts:
+                    line += (f', <a href="{url}">{ts}</a>' if url
+                             else f", {ts}")
             if c.get("excerpt"):
                 line += f" — <i>{html_escape(c['excerpt'])}</i>"
             text += line
