@@ -516,6 +516,40 @@ BIG_CROSS_NOTE = (
     "«Большой крест (базовый аудио-вариант)», не цитируй сбивчивые "
     "фрагменты ASR как инструкцию."
 )
+PRACTICE_ENSURE = [
+    (r"стирани\w*\s+болезненн", "practice:Практика_стирания_болезненных_событий"),
+    (r"стирани", "practice:Практика_стирания"),
+    (r"покаян", "practice:Практика_покаяния"),
+    (r"третий\s+глаз", "practice:Третий_Глаз"),
+    (r"тропинк", "practice_card:04_tropinki_zikra"),
+    (r"хром\w*\s+дервиш", "practice_хромой_дервиш"),
+    (r"работа\s+со\s+страхом", "practice:Работа_со_страхом"),
+    (r"ирадат|нисбат",
+     "practice:Практики_Ирадат_Нисбад_Суфийский_Крест_Раскрытие_центров"),
+    (r"родом|предков|окормлен",
+     "practice:Практика_Работа_с_Родом_связь_с_духовным_Родителем"),
+    (r"5\s+из\s+7|пять\s+из\s+семи", "practice:5_из_7_шагов_к_осознанию_себя"),
+    (r"4\s+шага|четыре\s+шага", "practice:4_шага_Накшбанди"),
+    (r"управлени\w*\s+внимани",
+     "practice:Новичкам_и_не_только_-_1-й_шаг_Практика_управления_вниманием"),
+    (r"пульсац", "practice:Практика_Пульсация"),
+    (r"гидротерап|полынотерап|йодотерап",
+     "practice:Гидротерапия_Полынотерапия_Йодотерапия"),
+    (r"суфийск\w*\s+крест|больш\w*\s+крест",
+     "practice:Практика_Священный_Суфийский_Крест"),
+    (r"умн\w*\s+молитв", "practice:Умная_Молитва"),
+    (r"практик\w*\s+внимани", "practice:Практики_Внимания"),
+    (r"балансировк\w*\s+интеллект",
+     "practice:Практика_Балансировка_интеллектуального_центра"),
+    (r"(3|три)\s+вида\s+энергии",
+     "practice:Практика_3_вида_энергии_как_остановить_потерю"),
+    (r"1\s+час\s+1\s+эмоци", "practice:Практика_1_час_1_эмоция"),
+    (r"контроль\s+эмоци", "practice:Контроль_эмоций"),
+    (r"депресс|уныни|гнев",
+     "practice:Практика_проработки_депресии,_уныния,_гнева"),
+    (r"новичк",
+     "practice:Новичкам_и_не_только_-_1-й_шаг_Практика_управления_вниманием"),
+]
 CENTERS_RE = re.compile(
     r"(энергетическ\w*\s+центр|центр\w*\s+(у\s+)?человек|"
     r"центр\w*\s+морал|центр\w*\s+(животн|социальн|духовн)\w*\s+тел|"
@@ -588,6 +622,11 @@ def _citation_dict(h: dict) -> dict:
         out["audio_mid"] = p.get("m")
         out["audio_url"] = f"/practice/{p.get('m')}"
         out["audio_dur"] = p.get("dur")
+        if p.get("parts"):
+            out["audio_parts"] = [
+                {"mid": x.get("m"), "label": x.get("label") or "",
+                 "url": f"/practice/{x.get('m')}"}
+                for x in p["parts"]]
     return out
 
 
@@ -673,6 +712,31 @@ def ensure_named_practice(question: str, ctx: dict) -> None:
         ctx["paragraphs"].insert(0, r)
 
 
+def ensure_practice_source(question: str, ctx: dict) -> bool:
+    """Для вопроса о конкретной практике гарантированно добавляет её
+    источник в контекст (векторный поиск иногда подставляет похожую карточку)."""
+    for pat, sid in PRACTICE_ENSURE:
+        if not re.search(pat, question, re.I):
+            continue
+        try:
+            rows = get_store().by_source("par", sid)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        have = {(h.get("sohbet_date"), h.get("paragraph_idx"))
+                for h in ctx["paragraphs"]}
+        rows = [r for r in rows
+                if (r.get("sohbet_date"), r.get("paragraph_idx")) not in have]
+        rows.sort(key=lambda r: r.get("paragraph_idx", 0))
+        for r in rows[:4]:
+            r["score"] = 0.95
+            r["rank"] = 0.95
+            ctx["paragraphs"].insert(0, r)
+        return True
+    return False
+
+
 def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
            progress=None, cancel=None) -> dict:
     """Полный цикл: поиск → генерация → ответ с цитатами.
@@ -722,6 +786,8 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                    use_hyde=use_hyde)
     apply_boosts(question, ctx)
     ensure_named_practice(question, ctx)
+    if ensure_practice_source(question, ctx):
+        practice = True
     stage("search")
     best = ctx.get("best_cos") or max(
         [h["score"] for h in ctx["paragraphs"] + ctx["qa"]], default=0)

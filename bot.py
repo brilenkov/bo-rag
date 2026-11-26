@@ -580,6 +580,9 @@ def practice_by_mid(mid: int):
     for sid, v in practice_links().items():
         if int(v.get("m") or 0) == int(mid):
             return sid, v
+        for p in (v.get("parts") or []):
+            if int(p.get("m") or 0) == int(mid):
+                return sid, p
     return None, None
 
 
