@@ -631,6 +631,15 @@ THEORY_ENSURE = [
     (r"лун", "theory:01_sexual"),
     (r"цикл", "theory:01_sexual"),
 ]
+TOPIC_ENSURE = [
+    (r"стремлен", "2024-03-24"),
+]
+TOPIC_NOTES = [
+    (r"стремлен",
+     "«Стремление» — это про осознанную мотивацию и движение к цели; "
+     "это не практика «специально ошибаться». Не смешивай две разные "
+     "практики: ошибки обсуждаются отдельно."),
+]
 CENTERS_RE = re.compile(r"центр", re.I)
 CENTERS_CONTEXT = (
     "В записях центры образуют три тела опыта: животное, социальное и "
@@ -949,6 +958,29 @@ def ensure_theory_source(question: str, ctx: dict) -> bool:
     return False
 
 
+def ensure_topic_source(question: str, ctx: dict) -> bool:
+    """Для отдельных тем гарантированно подкладывает нужный сохбет."""
+    for pat, sid in TOPIC_ENSURE:
+        if not re.search(pat, question, re.I):
+            continue
+        try:
+            rows = get_store().by_source("par", sid)
+        except Exception:
+            return False
+        if not rows:
+            return False
+        have = {(h.get("sohbet_date"), h.get("paragraph_idx"))
+                for h in ctx["paragraphs"]}
+        rows = [r for r in rows
+                if (r.get("sohbet_date"), r.get("paragraph_idx")) not in have]
+        for r in _pick_relevant(rows, question, 3):
+            r["score"] = 0.95
+            r["rank"] = 0.95
+            ctx["paragraphs"].insert(0, r)
+        return True
+    return False
+
+
 def ensure_literature_source(question: str, ctx: dict) -> bool:
     """Для литературы гарантированно добавляет книгу нужного автора."""
     for pat, sid in LITERATURE_ENSURE:
@@ -1062,6 +1094,8 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
         ensure_literature_source(question, ctx)
     if "theory" in scopes:
         ensure_theory_source(question, ctx)
+    if "sohbets" in scopes or "theory" in scopes:
+        ensure_topic_source(question, ctx)
     stage("search")
     best = ctx.get("best_cos") or max(
         [h["score"] for h in ctx["paragraphs"] + ctx["qa"]], default=0)
@@ -1109,6 +1143,9 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
         for pat, note in THEORY_NOTES:
             if re.search(pat, question, re.I):
                 extras.append("СПРАВКА ПО ТЕОРИИ:\n" + note)
+        for pat, note in TOPIC_NOTES:
+            if re.search(pat, question, re.I):
+                extras.append("УТОЧНЕНИЕ ПО ТЕМЕ:\n" + note)
     if extras:
         context_block = "\n\n".join(extras) + "\n\n" + context_block
     if mode == "publication":
