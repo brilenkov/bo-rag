@@ -893,9 +893,6 @@ def format_answer(res: dict) -> str:
             text += line
     if res.get("mode_note"):
         text += ("\n\n<i>ℹ️ " + html_escape(res["mode_note"]) + "</i>")
-    if DEBUG:
-        text += (f"\n\n<i>debug: {res['elapsed_sec']}s, "
-                 f"best={res['best_score']}, model={res['model']}</i>")
     return text
 
 
