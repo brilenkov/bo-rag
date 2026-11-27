@@ -785,6 +785,36 @@ def _excerpt(h: dict, limit: int = 120) -> str:
     return s if len(s) <= limit else s[:limit].rsplit(" ", 1)[0] + "…"
 
 
+def _canonical_terms(text: str) -> str:
+    """Приводит особенные термины к выбранному канону."""
+    if not text:
+        return text
+    mapping = {
+        "ихлас": "ихляс",
+        "кулб": "кальб",
+        "кульб": "кальб",
+        "калб": "кальб",
+        "тавакул": "таваккуль",
+        "тавакуль": "таваккуль",
+        "сир": "сирр",
+        "хафия": "Хафи",
+        "баракат": "барака",
+        "аракят": "барака",
+    }
+    for bad, good in mapping.items():
+        pat = re.compile(r"(?ui)(?<![а-яa-z])" + re.escape(bad) +
+                         r"(?![а-яa-z])")
+
+        def sub(m, good=good):
+            src = m.group(0)
+            if good[:1].isupper() or src[:1].isupper():
+                return good[:1].upper() + good[1:]
+            return good
+
+        text = pat.sub(sub, text)
+    return text
+
+
 def _citation_dict(h: dict) -> dict:
     sec = h.get("timestamp_sec") or h.get("start_sec")
     sec = int(float(sec)) if sec else None
@@ -794,10 +824,10 @@ def _citation_dict(h: dict) -> dict:
         "time": _fmt_ts(sec),
         "sec": sec,
         "score": h["score"],
-        "excerpt": _excerpt(h),
+        "excerpt": _canonical_terms(_excerpt(h)),
         "url": source_url(date, sec),
         "source_type": h.get("source_type"),
-        "title": h.get("title"),
+        "title": _canonical_terms(h.get("title") or ""),
         "author": h.get("author"),
     }
     p = practice_ref(date)
@@ -1233,6 +1263,8 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                 text, used = text2, (used2 or used)
         except Exception as e:
             log.warning("expand answer failed: %s", e)
+
+    text = _canonical_terms(text)
 
     citations = _collect_citations(ctx, used, max_par=max_par, max_qa=max_qa,
                                    force_method=practice)
