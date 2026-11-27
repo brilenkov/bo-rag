@@ -469,7 +469,10 @@ SYSTEM_PUBLICATION = (
 CITE_INSTRUCTION = (
     " В самом конце ответа добавь отдельной строкой «ИСТОЧНИКИ: P1, QA2» — "
     "метки только тех фрагментов контекста, которые ты реально использовал "
-    "в ответе. Если ни одного — напиши «ИСТОЧНИКИ: —»."
+    "в ответе. Если ни одного — напиши «ИСТОЧНИКИ: —». После этой строки не "
+    "пиши ничего. Не повторяй вопрос. Не упоминай метки P1/QA1 и номера "
+    "источников в самом тексте ответа, не проверяй себя и не обсуждай "
+    "источники."
 )
 
 # Практики: вопрос требует подробной инструкции и карточек method.
@@ -686,19 +689,44 @@ _SRC_RE = re.compile(r"ИСТОЧНИКИ\s*:\s*([^\n]+)")
 _LABEL_RE = re.compile(r"^(P\d+|QA\d+)$")
 
 
+def _strip_meta(text: str) -> str:
+    """Убирает служебные метки и саморефлексию модели из ответа."""
+    text = text or ""
+    # «из QA2» -> «из записей», затем сами метки
+    text = re.sub(r"\bиз\s+QA\d+\b", "из записей", text, flags=re.I)
+    text = re.sub(r"\b(QA\d+|P\d+)\b", "", text, flags=re.I)
+    lines = text.splitlines()
+    if lines and re.match(r"^\s*(ученик спрашивает|вопрос ученика|"
+                          r"вопрос читателя)\s*:", lines[0], re.I):
+        lines = lines[1:]
+    bad = ("проверь себя", "надо исправить", "не могу сослаться",
+           "в финальном ответе", "я уже написал",
+           "не использовал", "оп —")
+    clean = []
+    for line in lines:
+        low = line.lower().strip()
+        if any(k in low for k in bad):
+            continue
+        if low.startswith("источники:"):
+            continue
+        clean.append(line)
+    text = "\n".join(clean)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
 def _parse_used_sources(text: str):
-    """Вырезает строку «ИСТОЧНИКИ: …» из ответа LLM.
+    """Вырезает строку «ИСТОЧНИКИ: …» и служебный мусор после неё.
     Возвращает (чистый_текст, {метки} | None)."""
-    m = None
-    for m in _SRC_RE.finditer(text):
-        pass  # берём последнюю
+    m = _SRC_RE.search(text)
     if m is None:
-        return text, None
+        return _strip_meta(text), None
     labels = {t for t in (x.strip().rstrip(".").upper()
                           for x in re.split(r"[,\s]+", m.group(1)))
               if _LABEL_RE.match(t)}
-    clean = (text[:m.start()] + text[m.end():]).strip()
-    return clean, labels
+    clean = text[:m.start()].strip()
+    return _strip_meta(clean), labels
 
 
 def _excerpt(h: dict, limit: int = 120) -> str:
