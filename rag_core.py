@@ -412,6 +412,15 @@ def source_url(sohbet_date: str, sec):
     return url
 
 
+def _is_student_question(p: dict) -> bool:
+    """Реплика ученика-вопрос — не утверждение БО."""
+    name = (p.get("speaker_name") or "").strip()
+    if name in ("БО", "Борис Олегович", "Гунченко"):
+        return False
+    text = (p.get("text") or "").strip()
+    return "?" in text or text.lower().startswith(("в:", "вопрос"))
+
+
 def build_context_block(ctx: dict, max_par: int = 6, max_qa: int = 4) -> str:
     """Формирует блок контекста для промпта из найденных фрагментов."""
     lines = []
@@ -420,7 +429,10 @@ def build_context_block(ctx: dict, max_par: int = 6, max_qa: int = 4) -> str:
             f"[QA{i}] сохбет {qa.get('sohbet_date','?')} "
             f"({_fmt_ts(qa.get('timestamp_sec'))}), "
             f"спрашивает: {qa.get('asked_by','—')}\n"
-            f"Вопрос: {qa.get('question','')}\nОтвет БО: {qa.get('answer','')}")
+            f"Вопрос ученика (НЕ утверждение и НЕ слова БО): "
+            f"{qa.get('question','')}\n"
+            f"Ответ БО (только это можно использовать как его мысль): "
+            f"{qa.get('answer','')}")
     for i, p in enumerate(ctx["paragraphs"][:max_par], 1):
         if (p.get("source_type") == "method"
                 and str(p.get("title", "")).startswith("Практика")):
@@ -428,9 +440,12 @@ def build_context_block(ctx: dict, max_par: int = 6, max_qa: int = 4) -> str:
         else:
             src = (f"сохбет {p.get('sohbet_date', '?')} "
                    f"({_fmt_ts(p.get('start_sec'))})")
-        lines.append(
-            f"[P{i}] {src}, {p.get('speaker_name','?')}:\n"
-            f"{p.get('text','')}")
+        role = (p.get("speaker_role") or "").lower()
+        name = p.get("speaker_name") or "?"
+        is_student = (role in ("ученик", "student", "участник")
+                      or name not in ("БО", "Борис Олегович", "Гунченко"))
+        who = ("реплика ученика (НЕ слова БО)" if is_student else name)
+        lines.append(f"[P{i}] {src}, {who}:\n{p.get('text','')}")
     return "\n\n".join(lines)
 
 
@@ -442,6 +457,8 @@ SYSTEM_ZHIVOY = (
     "«об этом я пока не говорил». Не выдумывай цитаты и факты. "
     "Не сравнивай и не объединяй понятия из разных фрагментов контекста, "
     "если такого сравнения нет в самом тексте: каждый фрагмент — о своём."
+    " Реплики учеников и вопросы — это не слова БО; не выдавай их за его "
+    "утверждения. Используй только то, что говорит БО."
     " Термины пиши канонически: нафс, ихляс, тавакуль, зикр, тарикат (даже если в контексте встречается иное написание)."
     " Не упоминай внутренние номера карточек (#59, practice_card:…) и метки P1/QA1; называй практики по названиям."
     " Если вопрос содержит тему, которой нет в контексте, не заменяй её похожей историей: скажи, что об этом в записях не говорилось."
@@ -460,6 +477,8 @@ SYSTEM_PUBLICATION = (
     "одной-двумя. Не сравнивай и не объединяй понятия из разных "
     "фрагментов контекста, если такого сравнения нет в самом тексте. Если "
     "материала мало — коротко скажи, что по этой теме записей не найдено."
+    " Реплики учеников и вопросы — не слова БО; не выдавай их за его "
+    "утверждения."
     " Термины пиши канонически: нафс, ихляс, тавакуль, зикр, тарикат (даже если в контексте встречается иное написание)."
     " Не упоминай внутренние номера карточек (#59, practice_card:…) и метки P1/QA1; называй практики по названиям."
     " Если вопрос содержит тему, которой нет в контексте, не заменяй её похожей историей: скажи, что об этом в записях не говорилось."
@@ -1033,6 +1052,8 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
                    k_par=12 if (practice or centers) else 8,
                    k_qa=4 if (practice or centers) else 6,
                    use_hyde=use_hyde, scopes=scopes)
+    ctx["paragraphs"] = [p for p in ctx["paragraphs"]
+                         if not _is_student_question(p)]
     apply_boosts(question, ctx)
     ensure_named_practice(question, ctx)
     if ensure_practice_source(question, ctx):
