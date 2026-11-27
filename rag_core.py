@@ -521,11 +521,13 @@ SOURCE_BOOSTS = [
 ]
 
 PRACTICE_INSTRUCTION = (
-    "Это вопрос о практике. Дай подробную инструкцию: подготовка, "
-    "последовательность шагов, куда вести внимание, дыхание, нечётность, "
-    "типичные ошибки. Если спрашивают о вариантах или видах — перечисли "
-    "все формы, которые есть в контексте, даже если их больше трёх. "
-    "В первую очередь используй карточки практик и "
+    "Это вопрос о практике. Дай подробную инструкцию по тем аспектам, "
+    "которые есть в контексте: подготовка, последовательность шагов, куда "
+    "вести внимание, дыхание, нечётность, типичные ошибки. Не перечисляй "
+    "отсутствующие пункты и не пиши, что они «не раскрыты» или «не "
+    "описаны»: просто не включай их. Если спрашивают о вариантах или "
+    "видах — перечисли все формы, которые есть в контексте, даже если их "
+    "больше трёх. В первую очередь используй карточки практик и "
     "аудиопрактики (source_type=method). Если в контексте есть похожие "
     "практики (например, «Большой крест» и «Священный Суфийский Крест»), "
     "явно различи их и не называй одним и тем же. Не добавляй деталей, "
@@ -716,6 +718,20 @@ def _strip_meta(text: str) -> str:
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _strip_practice_hedges(text: str) -> str:
+    """Убирает служебные оговорки «этого нет в контексте» у практик."""
+    patterns = [
+        r"(?is)\s*Куда вести внимание[^.]*не (раскрыт|описан|указан)[^.]*\.",
+        r"(?is)\s*Подробной инструкции[^.]*не давал[^.]*\.",
+        r"(?is)\s*О конкретных типичных ошибках[^.]*не говорилось[^.]*\.",
+        r"(?is)\s*В этом фрагменте[^.]*не (раскрыт|описан|указан)[^.]*\.",
+        r"(?is)\s*Об этом[^.]*подробно не говорилось[^.]*\.",
+    ]
+    for pat in patterns:
+        text = re.sub(pat, "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _parse_used_sources(text: str):
@@ -1134,8 +1150,10 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
     if cancelled():
         return cancelled_result(best, ctx.get("hyde"))
     text, used = _parse_used_sources(text)
+    if practice:
+        text = _strip_practice_hedges(text)
     text = text.replace("\u00ad", "")
-    for bad in ("сочбет", "собет"):
+    for bad in ("сочбет", "собет", "сохет"):
         text = text.replace(bad, "сохбет")
     if (re.search(r"какие|список|самые\s+важные|перечисли", question, re.I)
             and len(text) < 1800 and len(ctx["paragraphs"]) >= 6):
@@ -1149,8 +1167,10 @@ def answer(question: str, mode: str = "zhivoy", use_hyde: bool = None,
             text2 = call_llm(expand, system=system, max_tokens=3000)
             text2, used2 = _parse_used_sources(text2)
             text2 = text2.replace("\u00ad", "")
-            for bad in ("сочбет", "собет"):
+            for bad in ("сочбет", "собет", "сохет"):
                 text2 = text2.replace(bad, "сохбет")
+            if practice:
+                text2 = _strip_practice_hedges(text2)
             if len(text2) > len(text):
                 text, used = text2, (used2 or used)
         except Exception as e:
