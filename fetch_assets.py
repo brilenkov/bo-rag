@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """fetch_assets.py — скачивает плоский стор + GGUF-модель из release-ассета.
 
-Ассет bo_rag_bot_assets_v16.tar.gz (приватный репо → нужен env GH_PAT):
+Ассет bo_rag_bot_assets_v17.tar.gz (приватный репо → нужен env GH_PAT):
     data/vectors_par.npy, data/vectors_qa.npy          — вектора (384d)
     data/payloads.db, data/meta.json                  — тексты и метаданные (sqlite)
     data/lex_par.npz, data/lex_qa.npz                 — BM25-индекс (гибрид)
@@ -22,7 +22,7 @@ from pathlib import Path
 
 BOT_DIR = Path(__file__).resolve().parent
 ASSET_URL = ("https://api.github.com/repos/brilenkov/brain-tools/"
-             "releases/assets/796441665")
+             "releases/assets/801285078")
 # llama-cpp-python на PyPI только sdist (компиляция падает на Render),
 # поэтому wheel собран локально (glibc 2.36) и лежит рядом ассетом.
 WHEEL_URL = ("https://api.github.com/repos/brilenkov/brain-tools/"
